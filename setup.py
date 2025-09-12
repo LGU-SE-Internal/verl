@@ -35,11 +35,11 @@ install_requires = [
     "pyarrow>=19.0.0",
     "pybind11",
     "pylatexenc",
-    "ray[default]>=2.41.0",
+    # "ray[default]>=2.41.0",
     "torchdata",
     "tensordict>=0.8.0,<=0.10.0,!=0.9.0",
     "transformers",
-    "wandb",
+    # "wandb",
     "packaging>=20.0",
     "tensorboard",
 ]

@@ -1,7 +1,7 @@
 export ROOT_DIR='/mnt/bn/trae-research-models/xujunjielong'
 export BASE_MODEL=$ROOT_DIR'/models/Qwen3-32B'
 export WAND_PROJECT='patch_verifier'
-export EXPERIMENT_NAME='TRAE_Lite'
+export EXPERIMENT_NAME='TRAE_Lite_DAPO'
 
 sleep 5m
 
