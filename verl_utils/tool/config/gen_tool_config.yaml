@@ -1,0 +1,59 @@
+tools:
+  - class_name: "verl_utils.tool.verl_edit_tool.EditTool"
+    config: 
+      root_dir: "/mnt/bn/trae-research-models/xujunjielong/datasets/benchmarks"
+      temp_dir: "/opt/tiger/patch_verifier/workspace"
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "edit_tool"
+        description: "A file edit tool to replace the content between `start_line` and `end_line` with a `new_str` in a file.\nNotes:\n1. The content at `start_line` and `end_line` is also included in the replacement.\n2. `start_line` must not exceed `end_line`\n3. `edit_tool` **permanently modifies the actual repository** (changes persist to the final outcome)."
+        parameters:
+          type: "object"
+          properties:
+            path:
+              type: "string"
+              description: "Relative file path e.g. `dir/file.py`"
+            start_line:
+              type: "string"
+              description: "Start line number."
+            end_line:
+              type: "string"
+              description: "End line number"
+            new_str:
+              type: "string"
+              description: "Replacement string"
+          required: ["path", "start_line", "end_line", "new_str"]
+  - class_name: "verl_utils.tool.verl_search_tool.SearchTool"
+    config: 
+      root_dir: "/mnt/bn/trae-research-models/xujunjielong/datasets/benchmarks"
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "search_tool"
+        description: "A code graph tool to show the source code of a function/class/class_method.\nNotes:\n1. If multiple matches are found, all of them will be returned.\n2. `search_tool` always reflects the **initial repository snapshot** (code state at the start of the conversation).\n3. Only python entities are available."
+        parameters:
+          type: "object"
+          properties:
+            construct:
+              type: "string"
+              description: "Type of program construct"
+              enum: ["function", "class", "class_method"]
+            entity:
+              type: "string"
+              description: "Simple entity name (e.g., `foo`)"
+          required: ["construct", "entity"]
+  - class_name: "verl_utils.tool.workspace_manager.PatchSubmission"
+    config: 
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "patch_submission"
+        description: "Automatically generate a diff patch for existing code changes and submit it to the user."
+        parameters:
+          type: "object"
+          properties: {}
+          required: []

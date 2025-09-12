@@ -1,0 +1,21 @@
+tools:
+  - class_name: "verl_utils.tool.verl_search_tool.SearchTool"
+    config: 
+      root_dir: "/mnt/bn/trae-research-models/xujunjielong/datasets/benchmarks"
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "search_tool"
+        description: "A code graph tool to show the source code of a function/class/class_method.\nNotes:\n1. If multiple matches are found, all of them will be returned.\n2. `search_tool` always reflects the **initial repository snapshot** (code state at the start of the conversation).\n3. Only python entities are available."
+        parameters:
+          type: "object"
+          properties:
+            construct:
+              type: "string"
+              description: "Type of program construct"
+              enum: ["function", "class", "class_method"]
+            entity:
+              type: "string"
+              description: "Simple entity name (e.g., `foo`)"
+          required: ["construct", "entity"]
