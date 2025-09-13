@@ -1182,6 +1182,7 @@ class SGLangRollout(BaseRollout):
             output_logprobs = []
             rollout_output_token_ids = []
 
+        total_bad = 0
         for req in sorted_output_req_list:
             assert req.state == AsyncRolloutRequestStateEnum.COMPLETED, f"Request {req.request_id} is not completed"
             assert (
@@ -1217,6 +1218,7 @@ class SGLangRollout(BaseRollout):
             if self.enable_compact_filtering and req.is_bad_trajectory: # mask bad trajectory's attention and loss
                 req_response_attention_mask.fill_(0)
                 req_response_loss_mask.fill_(0)
+                total_bad += 1
             response_attention_mask.append(req_response_attention_mask)
             response_loss_mask.append(req_response_loss_mask)
 
@@ -1232,6 +1234,7 @@ class SGLangRollout(BaseRollout):
                 output_logprobs.append(req.rollout_log_probs[-len(req.response_ids) :])
                 rollout_output_token_ids.append(req.output_token_ids[-len(req.response_ids) :])
 
+        print(f"Filtered {total_bad} bad trajectory.")
         prompt_ids = pad_sequence(
             prompt_ids,
             batch_first=True,
