@@ -1,27 +1,39 @@
-import re
 import json
+import re
+
+# def extract_think_format(llm_solution: str):
+#     assistant_turns = list(filter(None, llm_solution.split('assistant\n')))
+
+#     if not assistant_turns:
+#         return False
+
+#     for i, turn in enumerate(assistant_turns):
+#         if turn.count('<think>') != 1 or turn.count('</think>') != 1:
+#             return False
+
+#         match = re.search(r'<think>\n(.*?)\n</think>', turn, re.DOTALL)
+#         thought_content = match.group(1)
+
+#         if not thought_content:
+#             return False
+
+#         first_char = thought_content[0]
+#         if not first_char.isalnum():
+#             return False
+
+#     return True
 
 def extract_think_format(llm_solution: str):
-    assistant_turns = list(filter(None, llm_solution.split('assistant\n')))
+    think_pair_count = len(re.findall(r'<think>(.*?)</think>', llm_solution, re.DOTALL))
+    think_left_count = len(re.findall(r'<think>', llm_solution, re.DOTALL))
+    think_right_count = len(re.findall(r'</think>', llm_solution, re.DOTALL))
 
-    if not assistant_turns:
+    bad_pattern = re.search(r'<think>\n ', llm_solution) # verl sglang multi_turn bug: extra space after think.
+
+    if think_pair_count == think_left_count and think_left_count == think_right_count and not bad_pattern:
+        return True
+    else:
         return False
-
-    for i, turn in enumerate(assistant_turns):
-        if turn.count('<think>') != 1 or turn.count('</think>') != 1:
-            return False
-
-        match = re.search(r'<think>\n(.*?)\n</think>', turn, re.DOTALL)
-        thought_content = match.group(1)
-
-        if not thought_content:
-            return False
-
-        first_char = thought_content[0]
-        if not first_char.isalnum():
-            return False
-
-    return True
 
 def extract_tool_format(llm_solution: str):
     tool_call_pattern = r'<tool_call>(.*?)</tool_call>'
