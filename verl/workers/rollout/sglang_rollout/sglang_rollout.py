@@ -30,50 +30,48 @@ import sglang.srt.entrypoints.engine
 import torch
 import torch.distributed as dist
 from sglang.srt.managers.tokenizer_manager import (
-    ReleaseMemoryOccupationReqInput,
-    ResumeMemoryOccupationReqInput,
-    UpdateWeightsFromTensorReqInput,
-)
+    ReleaseMemoryOccupationReqInput, ResumeMemoryOccupationReqInput,
+    UpdateWeightsFromTensorReqInput)
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import (
-    assert_pkg_version,
-    get_ip,
-    get_open_port,
-    is_cuda,
-    set_prometheus_multiproc_dir,
-    set_ulimit,
-)
+from sglang.srt.utils import (assert_pkg_version, get_ip, get_open_port,
+                              is_cuda, set_prometheus_multiproc_dir,
+                              set_ulimit)
 from sglang.srt.weight_sync.utils import update_weights as sgl_update_weights
 from tensordict import TensorDict
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.nn.utils.rnn import pad_sequence
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin
+from transformers import (PreTrainedTokenizer, PreTrainedTokenizerFast,
+                          ProcessorMixin)
 
 from verl import DataProto
 from verl.interactions.base import BaseInteraction
-from verl.interactions.utils.interaction_registry import initialize_interactions_from_config
+from verl.interactions.utils.interaction_registry import \
+    initialize_interactions_from_config
 from verl.third_party.sglang import parallel_state as sglang_ps
 from verl.tools.base_tool import BaseTool
-from verl.tools.schemas import OpenAIFunctionCallSchema, OpenAIFunctionParsedSchema, OpenAIFunctionToolCall
+from verl.tools.schemas import (OpenAIFunctionCallSchema,
+                                OpenAIFunctionParsedSchema,
+                                OpenAIFunctionToolCall)
 from verl.tools.utils.tool_registry import initialize_tools_from_config
 from verl.utils.net_utils import is_ipv6
 from verl.utils.profiler import GPUMemoryLogger
-from verl.utils.torch_functional import get_response_mask, pad_sequence_to_length
+from verl.utils.torch_functional import (get_response_mask,
+                                         pad_sequence_to_length)
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.async_server import TokenOutput
 from verl.workers.rollout.base import BaseRollout
-from verl.workers.rollout.schemas import (
-    AsyncRolloutRequest,
-    AsyncRolloutRequestStateEnum,
-    FinishReasonTypeEnum,
-    Message,
-)
-from verl.workers.rollout.sglang_rollout.http_server_engine import AsyncHttpServerAdapter
-from verl.workers.rollout.sglang_rollout.utils import broadcast_pyobj, get_named_tensor_buckets
+from verl.workers.rollout.schemas import (AsyncRolloutRequest,
+                                          AsyncRolloutRequestStateEnum,
+                                          FinishReasonTypeEnum, Message)
+from verl.workers.rollout.sglang_rollout.http_server_engine import \
+    AsyncHttpServerAdapter
+from verl.workers.rollout.sglang_rollout.utils import (
+    broadcast_pyobj, get_named_tensor_buckets)
 
 try:
-    from sglang.srt.function_call.function_call_parser import FunctionCallParser
+    from sglang.srt.function_call.function_call_parser import \
+        FunctionCallParser
 except ImportError:
     from sglang.srt.function_call_parser import FunctionCallParser
 
@@ -299,6 +297,8 @@ class SGLangRollout(BaseRollout):
                 self.pad_token_id = self.processing_class.tokenizer.pad_token_id
             except AttributeError as e:
                 raise ValueError(f"Cannot get pad_token_id from processing_class {self.processing_class}") from e
+
+        self.enable_compact_filtering = self.config.get("enable_compact_filtering", False)
 
     def _init_distributed_env(self, device_mesh_cpu, **kwargs):
         self._device_mesh_cpu = device_mesh_cpu
@@ -860,8 +860,26 @@ class SGLangRollout(BaseRollout):
                         _req.update_metrics(metrics, tool_call.function.name)
                     if len(_req.input_ids) >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
+                        _req.is_bad_trajectory = True
                         break
-                    _req.state = AsyncRolloutRequestStateEnum.RUNNING
+
+                    submit = False
+                    for tool_call in parsed_tool_calls: # At most submit one time
+                        if tool_call.function.name == 'patch_submission':
+                            submit = True
+                            break
+                        elif tool_call.function.name == 'edit_tool': # At most edit three times
+                            _req.edit_times += 1
+                    if _req.edit_times >= 3:
+                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                        _req.is_bad_trajectory = True
+                        break
+                    if submit:
+                        _req.state = AsyncRolloutRequestStateEnum.COMPLETED
+                        finish_reason_type = FinishReasonTypeEnum.STOP
+                        break
+                    else:
+                        _req.state = AsyncRolloutRequestStateEnum.RUNNING
                 else:
                     raise ValueError(f"Unexpected tool calling last message state: {_req.messages[-1]}")
             elif _req.state == AsyncRolloutRequestStateEnum.RUNNING:
@@ -872,6 +890,7 @@ class SGLangRollout(BaseRollout):
 
                 if prompt_length + 1 >= self.config.max_model_len:
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
+                    _req.is_bad_trajectory = True
                     break
 
                 # Video support is not implemented yet
@@ -896,6 +915,7 @@ class SGLangRollout(BaseRollout):
                 current_turns += 1
                 if finish_reason_type == FinishReasonTypeEnum.LENGTH:
                     _req.add_assistant_message(self.processing_class, content)
+                    _req.is_bad_trajectory = True
                     break
                 else:
                     if self._function_call_parser and self._function_call_parser.has_tool_call(content):
@@ -976,6 +996,7 @@ class SGLangRollout(BaseRollout):
                     _req.add_user_message(self.processing_class, content)
                     if len(_req.input_ids) >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
+                        _req.is_bad_trajectory = True
                         break
                     else:
                         _req.state = AsyncRolloutRequestStateEnum.RUNNING
@@ -1190,11 +1211,18 @@ class SGLangRollout(BaseRollout):
                     f"""{req.request_id=} has response_ids length {req.response_ids.shape[-1]} 
                     greater than max_response_len {self.config.response_length},\n{req=}"""
                 )
+
+            req_response_attention_mask = req.response_attention_mask.to(tgt_device).squeeze(0)
+            req_response_loss_mask = req.response_loss_mask.to(tgt_device).squeeze(0)
+            if self.enable_compact_filtering and req.is_bad_trajectory: # mask bad trajectory's attention and loss
+                req_response_attention_mask.fill_(0)
+                req_response_loss_mask.fill_(0)
+            response_attention_mask.append(req_response_attention_mask)
+            response_loss_mask.append(req_response_loss_mask)
+
             prompt_attention_mask.append(req.prompt_attention_mask.to(tgt_device).squeeze(0))
-            response_attention_mask.append(req.response_attention_mask.to(tgt_device).squeeze(0))
             prompt_position_ids.append(req.prompt_position_ids.to(tgt_device).squeeze(0))
             response_position_ids.append(req.response_position_ids.to(tgt_device).squeeze(0))
-            response_loss_mask.append(req.response_loss_mask.to(tgt_device).squeeze(0))
             messages.append({"messages": req.messages})
             reward_scores.append(req.reward_scores)
             multi_modal_inputs.append(req.multi_modal_inputs)

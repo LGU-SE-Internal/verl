@@ -1,9 +1,10 @@
 import asyncio
-from typing import Dict, Optional
-from verl_utils.data.envs.WS import WorkSpace
-from typing import Any, Tuple
+from typing import Any, Dict, Optional, Tuple
+
 from verl.tools.base_tool import BaseTool
-from verl.tools.schemas import OpenAIFunctionToolSchema
+from verl.tools.schemas import OpenAIFunctionToolSchema, ToolResponse
+from verl_utils.data.envs.WS import WorkSpace
+
 
 class WorkspaceManager:
     def __init__(self):
@@ -29,10 +30,13 @@ class PatchSubmission(BaseTool):
         super().__init__(config, tool_schema)
         self.workspace_manager = None
 
-    async def create(self, instance_id: str, **kwargs) -> str:
+    def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
+        return self.tool_schema
+
+    async def create(self, instance_id: str, **kwargs) -> tuple[str, ToolResponse]:
         return await super().create(instance_id, **kwargs)
 
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         workspace = await self.workspace_manager.get(instance_id)
         if not workspace:
             error_msg = f"Error: Could not find workspace for instance '{instance_id}'. This may indicate an internal error."
@@ -41,7 +45,7 @@ class PatchSubmission(BaseTool):
 
         diff_output = await asyncio.to_thread(workspace.get_diff)
         
-        return diff_output, 0.0, {}
+        return ToolResponse(text=diff_output), 0.0, {}
 
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         return 0.0

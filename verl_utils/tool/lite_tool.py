@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verl.tools.base_tool import BaseTool
-from verl.tools.schemas import OpenAIFunctionToolSchema
+from verl.tools.schemas import OpenAIFunctionToolSchema, ToolResponse
 from verl_utils.data.envs.WS import WorkSpace
 
 MAX_RESPONSE_LEN: int = 16000
@@ -30,12 +30,15 @@ class SearchTool(BaseTool):
 
         self.workspace_manager = None
 
-    async def create(self, instance_id: str, id: str, sha: str, **kwargs) -> str:
+    def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
+        return self.tool_schema
+
+    async def create(self, instance_id: str, id: str, sha: str, **kwargs) -> tuple[str, ToolResponse]:
         db_path = f'{self.root_dir}/codegraph/{id}.db'
         self.db_paths[instance_id] = db_path
         return await super().create(instance_id, **kwargs)
 
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[ToolResponse, float, dict]:
         db_path = self.db_paths.get(instance_id)
         if not db_path:
             error_msg = f"No database path found for instance_id '{instance_id}'. `create` must be called first."
@@ -50,7 +53,7 @@ class SearchTool(BaseTool):
 
         if missing_params:
             error_msg = f"No search was performed. The following required arguments were not provided: {', '.join(missing_params)}. Please provide all required arguments and try again."
-            return error_msg, 0.0, {}
+            return ToolResponse(text=error_msg), 0.0, {}
 
         construct = parameters.get("construct")
         entity = parameters.get("entity")
@@ -62,7 +65,7 @@ class SearchTool(BaseTool):
             entity
         )
         
-        return response, 0.0, {}
+        return ToolResponse(text=response), 0.0, {}
 
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         return 0.0
@@ -167,8 +170,10 @@ class EditTool(BaseTool):
         if not os.path.exists(self.temp_dir):
             os.makedirs(self.temp_dir, exist_ok=True)
 
+    def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
+        return self.tool_schema
 
-    async def create(self, instance_id: str, id: str, sha: str, **kwargs) -> str:
+    async def create(self, instance_id: str, id: str, sha: str, **kwargs) -> tuple[str, ToolResponse]:
         if await self.workspace_manager.get(instance_id):
             await self.release(instance_id)
 
@@ -180,7 +185,7 @@ class EditTool(BaseTool):
 
         return await super().create(instance_id, **kwargs)
 
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         workspace = await self.workspace_manager.get(instance_id)
         if workspace is None:
             error_msg = f"No workspace found for instance_id '{instance_id}'. `create` must be called first."
@@ -209,7 +214,7 @@ class EditTool(BaseTool):
             new_str
         )
 
-        return response, 0.0, {}
+        return ToolResponse(text=response), 0.0, {}
     
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         return 0.0

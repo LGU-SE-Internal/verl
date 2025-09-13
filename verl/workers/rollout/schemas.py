@@ -20,9 +20,11 @@ from typing import Any, Optional
 
 import torch
 from pydantic import BaseModel, ConfigDict, model_validator
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin
+from transformers import (PreTrainedTokenizer, PreTrainedTokenizerFast,
+                          ProcessorMixin)
 
-from verl.tools.schemas import OpenAIFunctionToolCall, OpenAIFunctionToolSchema, ToolResponse
+from verl.tools.schemas import (OpenAIFunctionToolCall,
+                                OpenAIFunctionToolSchema, ToolResponse)
 from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__file__)
@@ -83,6 +85,8 @@ class AsyncRolloutRequest(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    edit_times: int = 0
+    is_bad_trajectory: bool = False
     batch_data_id: int = 0
     rollout_offset: int = 0
     request_id: str
@@ -612,6 +616,7 @@ class AsyncRolloutRequest(BaseModel):
                         log_warning = True
 
                 if log_warning:
+                    self.is_bad_trajectory = True
                     mode_str = f" ({self.tokenization_sanity_check_mode.value})"
                     logger.warning(
                         f"Inconsistent training and inference tokenization detected{mode_str}. This may lead to "
