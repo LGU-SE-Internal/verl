@@ -298,7 +298,7 @@ class SGLangRollout(BaseRollout):
             except AttributeError as e:
                 raise ValueError(f"Cannot get pad_token_id from processing_class {self.processing_class}") from e
 
-        self.enable_compact_filtering = self.config.get("enable_compact_filtering", False)
+        self.enable_compact_filtering = True
 
     def _init_distributed_env(self, device_mesh_cpu, **kwargs):
         self._device_mesh_cpu = device_mesh_cpu
