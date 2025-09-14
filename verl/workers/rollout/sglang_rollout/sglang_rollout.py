@@ -80,7 +80,6 @@ try:
 except ImportError:
     from sglang.srt.openai_api.protocol import Tool
 
-from verl_utils.tool.workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -263,8 +262,6 @@ class SGLangRollout(BaseRollout):
 
         os.environ.setdefault("SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK", "true")
 
-        self.workspace_manager = WorkspaceManager()
-
         (
             self._tool_schemas,
             self._tool_map,
@@ -300,11 +297,6 @@ class SGLangRollout(BaseRollout):
                 self.pad_token_id = self.processing_class.tokenizer.pad_token_id
             except AttributeError as e:
                 raise ValueError(f"Cannot get pad_token_id from processing_class {self.processing_class}") from e
-
-        # self.enable_compact_filtering = True
-        self.enable_compact_filtering = self.config.get("enable_compact_filtering", False)
-        if self.enable_compact_filtering:
-            print('Compact filtering has been enabled.')
 
     def _init_distributed_env(self, device_mesh_cpu, **kwargs):
         self._device_mesh_cpu = device_mesh_cpu
@@ -429,6 +421,9 @@ class SGLangRollout(BaseRollout):
             is_server_mode = False
         effective_first = first_rank_in_node or is_server_mode
 
+        if self.config.mode == "async" and not self.config.skip_tokenizer_init:
+            raise ValueError("async mode requires skip_tokenizer_init to be True")
+
         if effective_first:
             rank = dist.get_rank()
             os.environ["SGLANG_BLOCK_NONZERO_RANK_CHILDREN"] = "0"
@@ -461,7 +456,7 @@ class SGLangRollout(BaseRollout):
                 "mm_attention_backend": "fa3",
                 "attention_backend": attention_backend if attention_backend is not None else "fa3",
                 # In async mode, we want token in token out.
-                "skip_tokenizer_init": self.config.mode == "async",
+                "skip_tokenizer_init": self.config.skip_tokenizer_init,
             }
 
             if is_server_mode:
@@ -525,9 +520,6 @@ class SGLangRollout(BaseRollout):
 
         tools_config_file = config.multi_turn.tool_config_path
         tool_list = initialize_tools_from_config(tools_config_file)
-        
-        for tool in tool_list:
-            tool.workspace_manager = self.workspace_manager
 
         logger.info(f"Initialize tools from configuration.: tool_list: {tool_list}")
         tool_schemas = [tool.get_openai_tool_schema().model_dump() for tool in tool_list]
@@ -847,15 +839,15 @@ class SGLangRollout(BaseRollout):
         # Update with any additional kwargs
         request_sampling_params.update(kwargs)
 
-        max_turns = self.config.multi_turn.get("max_assistant_turns", 5)
-
-        while current_turns < max_turns:
+        while current_turns < self.config.multi_turn.max_assistant_turns:
             if _req.state == AsyncRolloutRequestStateEnum.PENDING:
                 await self._handle_pending_state(_req)
                 _req.state = AsyncRolloutRequestStateEnum.RUNNING
             elif _req.state == AsyncRolloutRequestStateEnum.TOOL_CALLING:
                 if _req.messages[-1].tool_calls is not None:
                     parsed_tool_calls = _req.messages[-1].tool_calls
+                    if self.config.skip_tokenizer_init:
+                        _req.messages[-1].tool_calls = None
                     tool_call_results = await asyncio.gather(
                         *[
                             self._tool_map[tool_call.function.name].execute(
@@ -866,44 +858,23 @@ class SGLangRollout(BaseRollout):
                             for tool_call in parsed_tool_calls
                         ]
                     )
-                    
-                    _req.add_tool_response_messages(self.processing_class, [resp for resp, _, _ in tool_call_results], current_turn=current_turns, max_turns=max_turns)
-                    
+                    _req.add_tool_response_messages(self.processing_class, [resp for resp, _, _ in tool_call_results])
                     for tool_call, (resp, reward, metrics) in zip(parsed_tool_calls, tool_call_results, strict=True):
                         _req.update_metrics(metrics, tool_call.function.name)
                     if len(_req.input_ids) >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
-                        _req.is_bad_trajectory = True
                         break
-
-                    submit = False
-                    for tool_call in parsed_tool_calls: # At most submit one time
-                        if tool_call.function.name == 'patch_submission':
-                            submit = True
-                            break
-                        elif tool_call.function.name == 'edit_tool': # At most edit three times
-                            _req.edit_times += 1
-                    if _req.edit_times >= 3:
-                        finish_reason_type = FinishReasonTypeEnum.LENGTH
-                        _req.is_bad_trajectory = True
-                        break
-                    if submit:
-                        _req.state = AsyncRolloutRequestStateEnum.COMPLETED
-                        finish_reason_type = FinishReasonTypeEnum.STOP
-                        break
-                    else:
-                        _req.state = AsyncRolloutRequestStateEnum.RUNNING
+                    _req.state = AsyncRolloutRequestStateEnum.RUNNING
                 else:
                     raise ValueError(f"Unexpected tool calling last message state: {_req.messages[-1]}")
             elif _req.state == AsyncRolloutRequestStateEnum.RUNNING:
                 # Only continue the conversation if the prompt length is not greater than max_model_len - 1,
                 # since SGLang raises an error when max_new_tokens + 1 is greater to max_model_len (the extra
                 # token accounts for the EOS token).
-                prompt_length = len(_req.get_generation_prompt_ids())
+                prompt_length = len(_req.get_generation_prompt_ids(self.processing_class))
 
                 if prompt_length + 1 >= self.config.max_model_len:
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
-                    _req.is_bad_trajectory = True
                     break
 
                 # Video support is not implemented yet
@@ -923,16 +894,20 @@ class SGLangRollout(BaseRollout):
                     )
 
                 output = await self._handle_engine_call(_req, request_sampling_params, image_data=image_data)
-                
-                content = output["text"]
-                output_ids = output["output_ids"]
+                if self.config.skip_tokenizer_init:
+                    content_ids = output["output_ids"]
+                    content = self.processing_class.decode(content_ids, skip_special_tokens=True)
+                    content_ids = torch.tensor(
+                        content_ids, dtype=_req.input_ids.dtype, device=_req.input_ids.device
+                    ).unsqueeze(0)
+                else:
+                    content_ids = None
+                    content = output["text"]
 
                 finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
                 current_turns += 1
-
                 if finish_reason_type == FinishReasonTypeEnum.LENGTH:
-                    _req.add_assistant_message(self.processing_class, content, output_ids)
-                    _req.is_bad_trajectory = True
+                    _req.add_assistant_message(self.processing_class, content=content, content_ids=content_ids)
                     break
                 else:
                     if self._function_call_parser and self._function_call_parser.has_tool_call(content):
@@ -964,27 +939,28 @@ class SGLangRollout(BaseRollout):
                                 )
                             )
                         if len(parsed_tool_calls) > 0:
-                            # MODIFIED: Pass output_ids to add_assistant_message
                             _req.add_assistant_message(
-                                self.processing_class, normed_content, output_ids, tool_calls=parsed_tool_calls
+                                # since the content is updated, we just pass the content not content_ids
+                                self.processing_class,
+                                content=normed_content,
+                                tool_calls=parsed_tool_calls,
                             )
                         else:
-                            _req.add_assistant_message(self.processing_class, content, output_ids)
+                            _req.add_assistant_message(self.processing_class, content=content, content_ids=content_ids)
                             finish_reason_type = FinishReasonTypeEnum.STOP
                             _req.state = AsyncRolloutRequestStateEnum.COMPLETED
                             break
                     else:
-                        # MODIFIED: Pass output_ids to add_assistant_message
                         _req.add_assistant_message(
                             self.processing_class,
-                            content,
-                            output_ids
+                            content=content,
+                            content_ids=content_ids,
                         )
                         if (
                             _req.interaction_kwargs
                             and self.interaction_map
                             and user_turns < self.config.multi_turn.max_user_turns
-                            and current_turns < max_turns
+                            and current_turns < self.config.multi_turn.max_assistant_turns
                         ):
                             _req.state = AsyncRolloutRequestStateEnum.INTERACTING
                         else:
@@ -1016,14 +992,12 @@ class SGLangRollout(BaseRollout):
                     _req.add_user_message(self.processing_class, content)
                     if len(_req.input_ids) >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
-                        _req.is_bad_trajectory = True
                         break
                     else:
                         _req.state = AsyncRolloutRequestStateEnum.RUNNING
 
-        if current_turns >= max_turns:
+        if current_turns >= self.config.multi_turn.max_assistant_turns:
             finish_reason_type = FinishReasonTypeEnum.STOP
-            _req.is_bad_trajectory = True # Mark as bad if max turns reached
 
         # Calculate the reward for each tool
         async def calc_reward_and_release_fn(name: str, tool: BaseTool):
@@ -1056,7 +1030,7 @@ class SGLangRollout(BaseRollout):
     async def _handle_engine_call(
         self, _req: AsyncRolloutRequest, sampling_params: dict, image_data: Optional[list[Any]] = None
     ) -> dict:
-        generation_prompt_ids = _req.get_generation_prompt_ids()
+        generation_prompt_ids = _req.get_generation_prompt_ids(self.processing_class)
         return await self._handle_engine_generate(generation_prompt_ids, sampling_params, image_data)
 
     async def _handle_engine_generate(
@@ -1068,8 +1042,6 @@ class SGLangRollout(BaseRollout):
         kwargs["max_new_tokens"] = max_new_tokens
         kwargs["n"] = 1  # group size is supported in preprocess
         return_logprob = kwargs.pop("logprobs", False)
-        
-        kwargs["stop"] = ["<|im_end|>", "<|im_start|>"]
 
         output = await self._engine.async_generate(
             input_ids=generation_prompt_ids,
@@ -1086,7 +1058,10 @@ class SGLangRollout(BaseRollout):
                 tool = self._tool_map[tool_schema.function.name]
                 create_kwargs = _req.tools_kwargs[tool.name].get("create_kwargs", {})
                 tool_creation_coroutines.append(tool.create(_req.request_id, **create_kwargs))
-
+            tool_creation_results = await asyncio.gather(*tool_creation_coroutines)
+            _req.add_tool_response_messages(
+                self.processing_class, [tool_result for _, tool_result in tool_creation_results]
+            )
         if _req.interaction_kwargs and self.interaction_map:
             interaction_kwargs = _req.interaction_kwargs
             # Get interaction by name from interaction_kwargs
@@ -1202,7 +1177,6 @@ class SGLangRollout(BaseRollout):
             output_logprobs = []
             rollout_output_token_ids = []
 
-        total_bad = 0
         for req in sorted_output_req_list:
             assert req.state == AsyncRolloutRequestStateEnum.COMPLETED, f"Request {req.request_id} is not completed"
             assert (
@@ -1213,36 +1187,30 @@ class SGLangRollout(BaseRollout):
             ), f"""Request {req.request_id} has different length of 
                 {req.input_ids.shape[-1]=}, {req.attention_mask.shape[-1]=}, 
                 {req.position_ids.shape[-1]=}, {req.loss_mask.shape[-1]=}"""
-
-            # This assert is now less likely to fail with the new tokenization logic, but we keep it
-            if req.input_ids.shape[-1] > self.config.max_model_len:
-                 logger.warning(
-                    f"Request {req.request_id} has input_ids length {req.input_ids.shape[-1]} "
-                    f"greater than max_model_len {self.config.max_model_len}. This will be truncated."
-                 )
-                 req.is_bad_trajectory = True
-
+            error_message_lines = [
+                f"""Request {req.request_id} has input_ids length {req.input_ids.shape[-1]}
+                    greater than max_model_len {self.config.max_model_len}""",
+                f"Decoded input_ids: {self.processing_class.decode(req.input_ids.squeeze(0))}",
+                f"Decoded prompt_ids: {self.processing_class.decode(req.prompt_ids.squeeze(0))}",
+                f"Decoded response_ids: {self.processing_class.decode(req.response_ids.squeeze(0))}",
+                f"Messages: {req.messages}",
+                f"Max model length: {req.max_model_len}",
+            ]
+            error_message = "\n".join(error_message_lines)
+            assert req.input_ids.shape[-1] <= self.config.max_model_len, error_message
 
             prompt_ids.append(req.prompt_ids.to(tgt_device).squeeze(0))
             response_ids.append(req.response_ids.to(tgt_device).squeeze(0))
             if req.response_ids.shape[-1] > self.config.response_length:
                 logger.warning(
                     f"""{req.request_id=} has response_ids length {req.response_ids.shape[-1]} 
-                    greater than max_response_len {self.config.response_length}, {req=}"""
+                    greater than max_response_len {self.config.response_length},\n{req=}"""
                 )
-
-            req_response_attention_mask = req.response_attention_mask.to(tgt_device).squeeze(0)
-            req_response_loss_mask = req.response_loss_mask.to(tgt_device).squeeze(0)
-            if self.enable_compact_filtering and req.is_bad_trajectory: # mask bad trajectory's attention and loss
-                req_response_attention_mask.fill_(0)
-                req_response_loss_mask.fill_(0)
-                total_bad += 1
-            response_attention_mask.append(req_response_attention_mask)
-            response_loss_mask.append(req_response_loss_mask)
-
             prompt_attention_mask.append(req.prompt_attention_mask.to(tgt_device).squeeze(0))
+            response_attention_mask.append(req.response_attention_mask.to(tgt_device).squeeze(0))
             prompt_position_ids.append(req.prompt_position_ids.to(tgt_device).squeeze(0))
             response_position_ids.append(req.response_position_ids.to(tgt_device).squeeze(0))
+            response_loss_mask.append(req.response_loss_mask.to(tgt_device).squeeze(0))
             messages.append({"messages": req.messages})
             reward_scores.append(req.reward_scores)
             multi_modal_inputs.append(req.multi_modal_inputs)
@@ -1252,7 +1220,6 @@ class SGLangRollout(BaseRollout):
                 output_logprobs.append(req.rollout_log_probs[-len(req.response_ids) :])
                 rollout_output_token_ids.append(req.output_token_ids[-len(req.response_ids) :])
 
-        print(f"Filtered {total_bad} bad trajectory.")
         prompt_ids = pad_sequence(
             prompt_ids,
             batch_first=True,
@@ -1447,13 +1414,14 @@ class SGLangRollout(BaseRollout):
         for data_idx, (raw_prompt, multi_modal_data) in enumerate(
             zip(prompts.non_tensor_batch["raw_prompt"], multi_modal_data_list, strict=True)
         ):
-            _input_ids = _pre_process_inputs(self.pad_token_id, prompts.batch["input_ids"][data_idx]).unsqueeze(0)
-            _attention_mask = _pre_process_inputs(0, prompts.batch["attention_mask"][data_idx]).unsqueeze(0)
-
             if self._tool_schemas:
                 _tools_kwargs = prompts.non_tensor_batch["tools_kwargs"][data_idx]
                 _tool_schemas = [self._tool_map[k].get_openai_tool_schema() for k in _tools_kwargs.keys()]
+                _input_ids = None
+                _attention_mask = None
             else:
+                _input_ids = _pre_process_inputs(self.pad_token_id, prompts.batch["input_ids"][data_idx])
+                _attention_mask = _pre_process_inputs(0, prompts.batch["attention_mask"][data_idx])
                 _tools_kwargs = {}
                 _tool_schemas = None
 
@@ -1485,10 +1453,21 @@ class SGLangRollout(BaseRollout):
                 max_prompt_len=self.config.prompt_length,
                 max_response_len=self.config.response_length,
                 max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
+                use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+                tokenization_sanity_check_mode=self.config.multi_turn.tokenization_sanity_check_mode,
                 processing_class=self.processing_class,
-                enable_qwen3_thinking_in_multiturn=self.config.multi_turn.get("enable_qwen3_thinking_in_multiturn", True),
-                enable_turn_reminder=self.config.multi_turn.get("enable_turn_reminder", True),
             )
+            error_message = f"""Request {req.request_id} has mismatched lengths: 
+            input_ids={req.input_ids.shape[-1]}, 
+            attention_mask={req.attention_mask.shape[-1]}, 
+            position_ids={req.position_ids.shape[-1]}, 
+            loss_mask={req.loss_mask.shape[-1]}"""
+            assert (
+                req.input_ids.shape[-1]
+                == req.attention_mask.shape[-1]
+                == req.position_ids.shape[-1]
+                == req.loss_mask.shape[-1]
+            ), error_message
             req_list.append(req)
 
         return req_list
@@ -1565,9 +1544,9 @@ class SGLangRollout(BaseRollout):
             max_prompt_len=self.config.prompt_length,
             max_response_len=self.config.response_length,
             max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
+            use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+            tokenization_sanity_check_mode=self.config.multi_turn.tokenization_sanity_check_mode,
             processing_class=self.processing_class,
-            enable_qwen3_thinking_in_multiturn=self.config.multi_turn.get("enable_qwen3_thinking_in_multiturn", True),
-            enable_turn_reminder=self.config.multi_turn.get("enable_turn_reminder", True),
         )
 
         # json_request already contains sampling_params

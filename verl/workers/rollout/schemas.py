@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import difflib
 import logging
 import os
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import torch
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -28,6 +29,11 @@ from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+BASE_CHAT_HISTORY = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "I am a user."},
+]
 
 
 class FinishReasonTypeEnum(str, Enum):
@@ -66,16 +72,19 @@ class AsyncRolloutRequestStateEnum(str, Enum):
     INTERACTING = "interacting"
 
 
+class TokenizationSanityCheckModeEnum(str, Enum):
+    """The enum for tokenization sanity check mode."""
+
+    DISABLE = "disable"
+    STRICT = "strict"
+    IGNORE_STRIPPABLE = "ignore_strippable"
+
+
 class AsyncRolloutRequest(BaseModel):
-    """The data model for async rollout.
-    MODIFIED: This class is heavily refactored to use direct token ID concatenation
-    instead of relying on `apply_chat_template` for multi-turn conversations,
-    mimicking the vLLM implementation for better consistency and correctness.
-    """
+    """The data model for async rollout."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    edit_times: int = 0
-    is_bad_trajectory: bool = False
     batch_data_id: int = 0
     rollout_offset: int = 0
     request_id: str
@@ -87,84 +96,165 @@ class AsyncRolloutRequest(BaseModel):
     tool_schemas: Optional[list[OpenAIFunctionToolSchema]] = None
     tools_kwargs: dict[str, Any] = {}
     interaction_kwargs: dict[str, Any] = {}
-    input_ids: torch.Tensor
-    prompt_ids: torch.Tensor
+    input_ids: Optional[torch.Tensor] = None
+    prompt_ids: Optional[torch.Tensor] = None
     response_ids: Optional[torch.Tensor] = None
-    attention_mask: torch.Tensor
-    prompt_attention_mask: torch.Tensor
+    attention_mask: Optional[torch.Tensor] = None
+    prompt_attention_mask: Optional[torch.Tensor] = None
     response_attention_mask: Optional[torch.Tensor] = None
-    position_ids: torch.Tensor
-    prompt_position_ids: torch.Tensor
+    position_ids: Optional[torch.Tensor] = None
+    prompt_position_ids: Optional[torch.Tensor] = None
     response_position_ids: Optional[torch.Tensor] = None
-    loss_mask: torch.Tensor
-    prompt_loss_mask: torch.Tensor
+    loss_mask: Optional[torch.Tensor] = None
+    prompt_loss_mask: Optional[torch.Tensor] = None
     response_loss_mask: Optional[torch.Tensor] = None
     reward_scores: dict[str, float]
     max_prompt_len: int
-    max_response_len: int
-    max_model_len: int
+    max_response_len: int = 8192
+    max_model_len: int = 32768
     metrics: dict[str, list[Any]] = {}
     output_token_ids: torch.Tensor | None = None
     rollout_log_probs: torch.Tensor | None = None
 
-    # MODIFIED: Added fields for pre-encoded Qwen3 tokens.
-    enable_qwen3_thinking_in_multiturn: bool
-    enable_turn_reminder: bool
-    assistant_gen_ids: torch.Tensor
-    user_start_ids: torch.Tensor
-    user_end_ids: torch.Tensor
-    tool_response_start_ids: torch.Tensor
-    tool_response_end_ids: torch.Tensor
-    
+    use_inference_chat_template: bool
+    tokenization_sanity_check_mode: TokenizationSanityCheckModeEnum
+    generation_prompt_ids: Optional[torch.Tensor] = None
+    base_conv_wo_gen_prompt_end_pos: int
+    base_conv_with_gen_prompt_end_pos: int
+
     @model_validator(mode="before")
     @classmethod
     def initialize_request(cls, values):
-        """
-        MODIFIED: This validator is completely rewritten. It no longer uses `apply_chat_template`.
-        It takes the `input_ids` and `attention_mask` provided from the dataloader as the ground truth
-        for the initial prompt. It then pre-encodes the special Qwen3 tokens needed for subsequent turns.
-        """
-        if (input_ids := values.get("input_ids")) is None:
-            raise ValueError("`input_ids` must be provided for AsyncRolloutRequest initialization.")
-        if (attention_mask := values.get("attention_mask")) is None:
-            raise ValueError("`attention_mask` must be provided for AsyncRolloutRequest initialization.")
+        if not (messages := values.get("messages")):
+            raise ValueError("messages is required for AsyncRolloutRequest initialization")
+        if not (max_prompt_len := values.get("max_prompt_len")):
+            raise ValueError("max_prompt_len is required for AsyncRolloutRequest initialization")
         if not (processing_class := values.pop("processing_class", None)):
-            raise ValueError("`processing_class` is required for AsyncRolloutRequest initialization.")
+            raise ValueError("processing_class is required for AsyncRolloutRequest initialization")
 
-        # The provided input_ids and attention_mask are the initial state.
-        values["prompt_ids"] = input_ids
-        values["prompt_attention_mask"] = attention_mask
-        
-        # Initialize multi-modal data structures
+        values["messages"] = [Message.model_validate(msg) for msg in messages]
+
+        # If there is no multi_modal_keys, we assume the multi-modal data is image and video.
         if not values.get("multi_modal_keys"):
             values["multi_modal_keys"] = ["image", "video"]
         if not values.get("multi_modal_data"):
             values["multi_modal_data"] = {key: [] for key in values["multi_modal_keys"]}
+        else:
+            # check if all multi_modal_keys are in multi_modal_data
+            for key in values["multi_modal_keys"]:
+                if key not in values["multi_modal_data"]:
+                    values["multi_modal_data"][key] = []
         if not values.get("multi_modal_inputs"):
             values["multi_modal_inputs"] = {}
 
-        # Position IDs are computed from the attention mask.
-        values["position_ids"] = values["prompt_position_ids"] = cls._get_position_ids(
-            processing_class, input_ids, attention_mask, values["multi_modal_inputs"]
+        tools = (
+            [tool.model_dump() for tool in tool_schemas] if (tool_schemas := values.get("tool_schemas", [])) else None
         )
 
-        # Loss mask for the initial prompt is all False (0).
-        values["loss_mask"] = values["prompt_loss_mask"] = torch.zeros_like(input_ids, dtype=torch.bool)
-        
-        # MODIFIED: Pre-encode special tokens for Qwen3 agent format.
-        if values.get("enable_qwen3_thinking_in_multiturn", True):
-            gen_str = "\n<|im_start|>assistant\n"
-        else:
-            # Fallback to older format if needed
-            gen_str = "\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-        
-        values["assistant_gen_ids"] = torch.tensor(processing_class.encode(gen_str, add_special_tokens=False), dtype=torch.long)
-        values["user_start_ids"] = torch.tensor(processing_class.encode("\n<|im_start|>user\n", add_special_tokens=False), dtype=torch.long)
-        values["user_end_ids"] = torch.tensor(processing_class.encode("<|im_end|>", add_special_tokens=False), dtype=torch.long)
-        values["tool_response_start_ids"] = torch.tensor(processing_class.encode("<tool_response>\n", add_special_tokens=False), dtype=torch.long)
-        values["tool_response_end_ids"] = torch.tensor(processing_class.encode("\n</tool_response>", add_special_tokens=False), dtype=torch.long)
+        multi_modal_data = values["multi_modal_data"]
+        tokens_without_prompt = cls._handle_apply_chat_template(
+            processing_class,
+            messages,
+            multi_modal_data=multi_modal_data,
+            tools=tools,
+            add_generation_prompt=False,
+            tokenize=True,
+        )
+        if (
+            values.get("input_ids") is None
+            or values.get("attention_mask") is None
+            or values.get("position_ids") is None
+        ):
+            tokenization_dict_with_prompt = cls._handle_apply_chat_template(
+                processing_class,
+                messages,
+                multi_modal_data=multi_modal_data,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+            )
+
+            values["input_ids"], values["attention_mask"] = (
+                tokenization_dict_with_prompt["input_ids"],
+                tokenization_dict_with_prompt["attention_mask"],
+            )
+            if values["input_ids"].shape[-1] > max_prompt_len:
+                # Only log the warning to avoid truncating in the middle of generation prompt. Consider raising an
+                # error for this case in the future.
+                logger.warning(
+                    f"Prompt {values['batch_data_id']} has length {values['input_ids'].shape[-1]} "
+                    f"which is greater than max_prompt_len {max_prompt_len} after applied chat template with tools."
+                )
+
+            # Process multi_modal_inputs
+            multi_modal_inputs = tokenization_dict_with_prompt.copy()
+            multi_modal_inputs.pop("input_ids", None)
+            multi_modal_inputs.pop("attention_mask", None)
+            values["multi_modal_inputs"] = multi_modal_inputs
+
+            values["position_ids"] = values["prompt_position_ids"] = cls._get_position_ids(
+                processing_class, values["input_ids"], values["attention_mask"], multi_modal_inputs
+            )
+
+        values["prompt_ids"], values["prompt_attention_mask"] = values["input_ids"], values["attention_mask"]
+        values["loss_mask"] = values["prompt_loss_mask"] = torch.zeros_like(values["input_ids"], dtype=torch.bool)
+        values["generation_prompt_ids"] = values["input_ids"][..., tokens_without_prompt.shape[-1] :]
+        values["base_conv_wo_gen_prompt_end_pos"] = cls._handle_apply_chat_template(
+            processing_class,
+            BASE_CHAT_HISTORY,
+            multi_modal_data=multi_modal_data,
+            tools=tools,
+            add_generation_prompt=False,
+            tokenize=True,
+        ).shape[-1]
+
+        values["base_conv_with_gen_prompt_end_pos"] = cls._handle_apply_chat_template(
+            processing_class,
+            BASE_CHAT_HISTORY,
+            multi_modal_data=multi_modal_data,
+            tools=tools,
+            add_generation_prompt=True,
+            tokenize=True,
+        ).shape[-1]
 
         return values
+
+    @staticmethod
+    def _handle_apply_chat_template(
+        processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
+        messages: list[Message],
+        multi_modal_data: dict[str, Any],
+        tools: Optional[list[OpenAIFunctionToolSchema]] = None,
+        add_generation_prompt: bool = False,
+        tokenize: bool = False,
+        return_dict: bool = False,
+    ):
+        raw_prompt = processing_class.apply_chat_template(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt, tokenize=False
+        )
+        if not tokenize:
+            return raw_prompt
+
+        if isinstance(processing_class, PreTrainedTokenizer) or isinstance(processing_class, PreTrainedTokenizerFast):
+            if any(len(values) > 0 for values in multi_modal_data.values()):
+                logger.warning(
+                    "There is multi_modal_data but you are not using a processor. Multi-modal data will be ignored."
+                )
+            model_inputs = processing_class(text=[raw_prompt], return_tensors="pt")
+        elif isinstance(processing_class, ProcessorMixin):
+            # When we update multi_model_keys, we also need to update this logic
+            images = images if len(images := multi_modal_data.get("image", [])) > 0 else None
+            videos = videos if len(videos := multi_modal_data.get("video", [])) > 0 else None
+            model_inputs = processing_class(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
+        else:
+            raise ValueError(f"Unsupported processing class type: {type(processing_class)}")
+
+        model_inputs = dict(model_inputs)
+        if return_dict:
+            return model_inputs
+        else:
+            return model_inputs["input_ids"]
 
     @staticmethod
     def _get_position_ids(
@@ -216,22 +306,17 @@ class AsyncRolloutRequest(BaseModel):
         """
         Update the input_ids, attention_mask, position_ids, and loss_mask of the request in additive manner.
         """
-        if new_input_ids.dim() == 1:
-            new_input_ids = new_input_ids.unsqueeze(0)
-
         self.input_ids = torch.cat([self.input_ids, new_input_ids], dim=-1)
-        
-        new_attention_mask = torch.ones_like(new_input_ids) * int(attention_mask)
-        self.attention_mask = torch.cat([self.attention_mask, new_attention_mask], dim=-1)
-        
-        new_loss_mask = torch.ones_like(new_input_ids) * int(loss_mask)
-        self.loss_mask = torch.cat([self.loss_mask, new_loss_mask], dim=-1)
+        attention_mask = torch.ones_like(new_input_ids) * int(attention_mask)
+        self.attention_mask = torch.cat([self.attention_mask, attention_mask], dim=-1)
+        loss_mask = torch.ones_like(new_input_ids) * int(loss_mask)
+        self.loss_mask = torch.cat([self.loss_mask, loss_mask], dim=-1)
 
         if new_multi_modal_inputs:
             self._update_multi_modal_inputs(new_multi_modal_inputs)
 
         new_position_ids = self._get_position_ids(
-            processing_class, new_input_ids, new_attention_mask, new_multi_modal_inputs
+            processing_class, new_input_ids, attention_mask, new_multi_modal_inputs
         )
 
         last_pos = self.position_ids[..., -1:]
@@ -259,92 +344,133 @@ class AsyncRolloutRequest(BaseModel):
                 else input_tensor
             )
 
-    def get_generation_prompt_ids(self) -> list[int]:
+    def get_generation_prompt_ids(
+        self, processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin
+    ) -> list[int]:
         """
-        MODIFIED: Get the generation prompt ids for rollout engine.
-        This now simply returns the current full sequence of token IDs, as the
-        next-turn prompt is handled explicitly by other methods.
+        Get the generation prompt ids for rollout engine.
+
+        Because rollout engine(SGLang) requires the ids to be a list, we need to convert the tensor to a list.
         """
-        return self.input_ids.squeeze(0).tolist()
-    
+        generation_prompt_ids = (
+            None
+            if self.input_ids[..., -self.generation_prompt_ids.shape[-1] :].eq(self.generation_prompt_ids).all()
+            else self.generation_prompt_ids
+        )
+        if generation_prompt_ids is not None:
+            self._update_input_ids(processing_class, generation_prompt_ids, attention_mask=True, loss_mask=False)
+
+        if self.use_inference_chat_template:
+            messages = [msg.model_dump() for msg in self.messages]
+            tools = [tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None
+            generation_prompt_ids = self._handle_apply_chat_template(
+                processing_class,
+                messages,
+                multi_modal_data=self.multi_modal_data,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+            return generation_prompt_ids.squeeze(0).tolist()
+        else:
+            return self.input_ids.squeeze(0).tolist()
+
     def add_user_message(
         self,
         processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
         content: str,
     ) -> None:
-        """
-        MODIFIED: This method now also works by encoding the string and appending IDs.
-        Used for multi-turn interactions not involving tools (e.g., gsm8k).
-        """
         self.messages.append(Message(role="user", content=content))
-        
-        # Manually construct the string and encode it
-        full_str = f"\n<|im_start|>user\n{content}<|im_end|>"
-        content_ids = torch.tensor(processing_class.encode(full_str, add_special_tokens=False), dtype=torch.long)
-        
+        messages = [*BASE_CHAT_HISTORY, self.messages[-1]]
+        tools = [tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None
+
+        # We don't need to pass multi_modal_data here because we don't have any multi-modal data from Engine
+        # Inference, it is pure text.
+        content_ids = self._handle_apply_chat_template(
+            processing_class, messages, multi_modal_data={}, tools=tools, add_generation_prompt=False, tokenize=True
+        )[..., self.base_conv_wo_gen_prompt_end_pos :]
         self._update_input_ids(processing_class, content_ids, attention_mask=True, loss_mask=False)
-        
-        # Add the assistant prompt for the next turn
-        self._update_input_ids(processing_class, self.assistant_gen_ids, attention_mask=True, loss_mask=False)
 
     def add_assistant_message(
         self,
         processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
         content: str,
-        output_ids: List[int],
+        content_ids: Optional[torch.Tensor] = None,
         tool_calls: Optional[list[OpenAIFunctionToolCall]] = None,
     ) -> None:
-        """
-        MODIFIED: This method now takes raw `output_ids` from the SGLang engine.
-        It appends these IDs directly to the sequence tensors.
-        """
         self.messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
-        
-        new_ids = torch.tensor(output_ids, dtype=torch.long)
-        # Assistant's own generation has loss enabled (loss_mask=True).
-        self._update_input_ids(processing_class, new_ids, attention_mask=True, loss_mask=True)
+        if content_ids is None:
+            messages = [*BASE_CHAT_HISTORY, self.messages[-1]]
+            tools = [tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None
+
+            # We don't need to pass multi_modal_data here because we don't have any multi-modal data from Engine
+            # Inference, it is pure text.
+            content_ids = self._handle_apply_chat_template(
+                processing_class, messages, multi_modal_data={}, tools=tools, add_generation_prompt=False, tokenize=True
+            )[..., self.base_conv_with_gen_prompt_end_pos :]
+        self._update_input_ids(processing_class, content_ids, attention_mask=True, loss_mask=True)
 
     def add_tool_response_messages(
         self,
         processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
         contents: list[ToolResponse],
-        current_turn: int,
-        max_turns: int
     ) -> None:
-        """
-        MODIFIED: This method is completely rewritten to follow the vLLM logic.
-        It constructs the tool response string, wraps it with user start/end tokens,
-        encodes it, and appends the resulting IDs to the sequence.
-        """
         if not contents or all(content.is_empty() for content in contents):
-            # If there are no tool calls or empty responses, just prompt the assistant again.
-            self._update_input_ids(processing_class, self.assistant_gen_ids, attention_mask=True, loss_mask=False)
             return
+        # We also handle the case when tool returns image
+        # We require the processing of the image and video to be done at tool.execute() level
+        delta_multi_modal_data = {key: [] for key in self.multi_modal_keys}
+        for content in contents:
+            if content.is_text_only():
+                self.messages.append(Message(role="tool", content=content.text))
+            else:
+                content_list = []
+                # When we update multi_model_keys, we also need to update this logic
+                if content.image:
+                    content_list.extend([{"type": "image"} for _ in content.image])
+                    delta_multi_modal_data["image"].extend(content.image)
+                if content.video:
+                    content_list.extend([{"type": "video"} for _ in content.video])
+                    delta_multi_modal_data["video"].extend(content.video)
+                if content.text:
+                    content_list.append({"type": "text", "text": content.text})
+                self.messages.append(Message(role="tool", content=content_list))
 
-        tool_response_str = ""
-        for tool_resp in contents:
-            # Assuming tool_resp.text is the primary content for now.
-            # Multi-modal responses from tools would need more complex handling here.
-            response_text = tool_resp.text or ""
-            
-            tool_response_str += "<tool_response>\n"
-            tool_response_str += response_text.strip() + "\n"
-            if self.enable_turn_reminder:
-                reminder = f"[Reminder]: You need to finish this task within {max_turns} turns. This is {current_turn + 1} turn. Remain {max_turns - current_turn - 1} turn.\n"
-                tool_response_str += reminder
-            tool_response_str += "</tool_response>\n"
+        messages = [*BASE_CHAT_HISTORY, *self.messages[-len(contents) :]]
+        tools = [tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None
 
-        full_user_turn_str = f"\n<|im_start|>user\n{tool_response_str.strip()}<|im_end|>"
-        
-        # Encode the entire user turn (with tool responses)
-        user_turn_ids = torch.tensor(processing_class.encode(full_user_turn_str, add_special_tokens=False), dtype=torch.long)
-        
-        # Append the user turn IDs. These are considered part of the prompt, so loss is disabled.
-        self._update_input_ids(processing_class, user_turn_ids, attention_mask=True, loss_mask=False)
-        
-        # Now, add the prompt for the assistant's next turn, also with loss disabled.
-        self._update_input_ids(processing_class, self.assistant_gen_ids, attention_mask=True, loss_mask=False)
+        for key in self.multi_modal_keys:
+            if len(delta_multi_modal_data[key]) > 0:
+                self.multi_modal_data[key].extend(delta_multi_modal_data[key])
 
+        # We just passed the new multi-modal data to the chat template to update the input_ids.
+        content_info = self._handle_apply_chat_template(
+            processing_class,
+            messages,
+            multi_modal_data=delta_multi_modal_data,
+            tools=tools,
+            add_generation_prompt=False,
+            tokenize=True,
+            return_dict=True,
+        )
+        content_ids = content_info["input_ids"][..., self.base_conv_wo_gen_prompt_end_pos :]
+
+        # process multi_modal_inputs
+        multi_modal_inputs = content_info.copy()
+        multi_modal_inputs.pop("input_ids", None)
+        multi_modal_inputs.pop("attention_mask", None)
+
+        # chat templates include generation prompt tokens (e.g., "<im_start>assistant\n")
+        # So when tool response is added, we need to explicitly remove these tokens.
+        self._remove_generation_prompt_ids_if_present()
+
+        self._update_input_ids(
+            processing_class,
+            content_ids,
+            attention_mask=True,
+            loss_mask=False,
+            new_multi_modal_inputs=multi_modal_inputs,
+        )
 
     def update_metrics(self, metrics: Any, tool_id: str) -> None:
         """
@@ -354,30 +480,170 @@ class AsyncRolloutRequest(BaseModel):
             self.metrics[tool_id] = []
         self.metrics[tool_id].append(metrics)
 
+    def _get_prompt_diffs(
+        self,
+        processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
+        full_prompt_ids: torch.Tensor,
+        current_prompt_ids: torch.Tensor,
+        diff_surrounding_chars: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Get differences between full prompt and current prompt with surrounding context.
+
+        This function helps debug tokenization mismatches by showing the differences between
+        full prompt and current prompt with surrounding context. Instead of just showing
+        the exact diff, it includes additional tokens before and after to help locate
+        the issue in the chat template.
+
+        For example, if the actual diff is a newline change from "\n\n" to "\n", with
+        diff_surrounding_chars the output might look like:
+
+        full_prompt_chunk:    "<|im_start|>assistant\n\nI think..."
+        current_prompt_chunk: "<|im_start|>assistant\nI think..."
+
+        This context makes it much easier to identify where in the chat template the
+        mismatch occurs.
+
+        Args:
+            processing_class: The processing class to use for decoding the token IDs
+            full_prompt_ids: Token IDs from applying chat template to all messages at once
+            current_prompt_ids: Token IDs from incremental chat template application
+            diff_surrounding_chars: Number of surrounding characters to include for context (default: 10)
+
+        Returns:
+            List of dicts containing the differing chunks with context and their indices
+        """
+        full_prompt_ids = full_prompt_ids.squeeze(0)
+        current_prompt_ids = current_prompt_ids.squeeze(0)
+        full_prompt = processing_class.decode(full_prompt_ids, skip_special_tokens=False)
+        current_prompt = processing_class.decode(current_prompt_ids, skip_special_tokens=False)
+        s = difflib.SequenceMatcher(None, full_prompt, current_prompt, autojunk=False)
+        diffs = []
+        for tag, i1, i2, j1, j2 in s.get_opcodes():
+            if tag == "equal":
+                continue
+
+            # Get the surrounding context for better readability
+            start_i = max(0, i1 - diff_surrounding_chars)
+            end_i = min(len(full_prompt), i2 + diff_surrounding_chars)
+            start_j = max(0, j1 - diff_surrounding_chars)
+            end_j = min(len(current_prompt), j2 + diff_surrounding_chars)
+
+            diffs.append(
+                {
+                    "full_prompt_chunk": full_prompt[start_i:end_i],
+                    "current_prompt_chunk": current_prompt[start_j:end_j],
+                    "indices": (start_i, end_i, start_j, end_j),
+                }
+            )
+        return diffs
+
+    def _remove_generation_prompt_ids_if_present(self) -> None:
+        """
+        Remove generation prompt IDs from input tensors if they are present at the end.
+        """
+        if self.input_ids[..., -self.generation_prompt_ids.shape[-1] :].eq(self.generation_prompt_ids).all():
+            self.input_ids = self.input_ids[..., : -self.generation_prompt_ids.shape[-1]]
+            self.attention_mask = self.attention_mask[..., : -self.generation_prompt_ids.shape[-1]]
+            self.position_ids = self.position_ids[..., : -self.generation_prompt_ids.shape[-1]]
+            self.loss_mask = self.loss_mask[..., : -self.generation_prompt_ids.shape[-1]]
+
     def finalize(
         self,
         processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
         reward_scores: dict[str, list[float]],
         finish_reason_type: FinishReasonTypeEnum = FinishReasonTypeEnum.STOP,
     ) -> None:
-        """
-        MODIFIED: The tokenization sanity check has been completely removed as it's
-        no longer relevant with the direct token ID manipulation strategy.
-        """
         self.state = AsyncRolloutRequestStateEnum.COMPLETED
         self.reward_scores = reward_scores
-        
-        # If the last action was an assistant generation that ended, and it was followed by a gen prompt,
-        # we might need to remove it if no more turns are expected. However, the current logic adds the
-        # gen prompt only when expecting a next turn, so this is generally safe.
-        # Let's ensure the final sequence doesn't end with an assistant prompt if it's a terminal state.
-        if finish_reason_type == FinishReasonTypeEnum.STOP or finish_reason_type == FinishReasonTypeEnum.LENGTH:
-             if self.input_ids[..., -self.assistant_gen_ids.shape[-1] :].eq(self.assistant_gen_ids).all():
-                self.input_ids = self.input_ids[..., : -self.assistant_gen_ids.shape[-1]]
-                self.attention_mask = self.attention_mask[..., : -self.assistant_gen_ids.shape[-1]]
-                self.position_ids = self.position_ids[..., : -self.assistant_gen_ids.shape[-1]]
-                self.loss_mask = self.loss_mask[..., : -self.assistant_gen_ids.shape[-1]]
 
+        # In case we failed to generate the assistant message and the generation prompt ids were already added to
+        # input_ids, remove them from the end of input_ids
+        self._remove_generation_prompt_ids_if_present()
+
+        self.response_ids = self.input_ids[..., self.prompt_ids.shape[-1] :]
+
+        if self.tokenization_sanity_check_mode != TokenizationSanityCheckModeEnum.DISABLE:
+            # When there is a diff, we log the diffs with diff_surrounding_chars context
+            diff_surrounding_chars = 10
+
+            messages = [msg.model_dump() for msg in self.messages]
+            tools = [tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None
+            full_prompt_info = self._handle_apply_chat_template(
+                processing_class,
+                messages,
+                multi_modal_data=self.multi_modal_data,
+                tools=tools,
+                add_generation_prompt=False,
+                tokenize=True,
+                return_dict=True,
+            )
+            full_prompt_ids = full_prompt_info["input_ids"]
+
+            # We must use dict(full_prompt_info) to convert BatchFeature values to a new dict
+            # because np.array() only keeps the keys for BatchFeature.
+            full_prompt_multi_modal_inputs = full_prompt_info.copy()
+            full_prompt_multi_modal_inputs.pop("input_ids", None)
+            full_prompt_multi_modal_inputs.pop("attention_mask", None)
+
+            for multi_modal_inputs_key in self.multi_modal_inputs:
+                if multi_modal_inputs_key in full_prompt_multi_modal_inputs:
+                    if (
+                        not self.multi_modal_inputs[multi_modal_inputs_key]
+                        .eq(full_prompt_multi_modal_inputs[multi_modal_inputs_key])
+                        .all()
+                    ):
+                        logger.warning(
+                            f"Multi-modal data {multi_modal_inputs_key} is not consistent. "
+                            f"This may lead to unexpected behavior during training. "
+                            f"Please review your multi_modal_inputs logic."
+                        )
+                else:
+                    logger.warning(
+                        f"Multi-modal inputs key {multi_modal_inputs_key} is not found in the multi_modal_inputs. "
+                        f"This may lead to unexpected behavior during training."
+                        f"Please review your multi_modal_inputs logic."
+                    )
+
+            if diffs := self._get_prompt_diffs(
+                processing_class, full_prompt_ids, self.input_ids, diff_surrounding_chars=diff_surrounding_chars
+            ):
+                log_warning = False
+                if self.tokenization_sanity_check_mode == TokenizationSanityCheckModeEnum.STRICT:
+                    log_warning = True
+                elif self.tokenization_sanity_check_mode == TokenizationSanityCheckModeEnum.IGNORE_STRIPPABLE:
+                    non_strippable_diffs_exist = any(
+                        d["full_prompt_chunk"].strip() or d["current_prompt_chunk"].strip() for d in diffs
+                    )
+                    if non_strippable_diffs_exist:
+                        log_warning = True
+
+                if log_warning:
+                    mode_str = f" ({self.tokenization_sanity_check_mode.value})"
+                    logger.warning(
+                        f"Inconsistent training and inference tokenization detected{mode_str}. This may lead to "
+                        f"unexpected behavior during training. Please review your chat template to determine if this "
+                        f"is intentional. For more information, refer to the multiturn README.md."
+                    )
+                    logger.warning(
+                        f"Showing {diff_surrounding_chars} characters before and after the diffs for context and "
+                        f"better readability."
+                    )
+                    diff_details_list = []
+                    for d in diffs:
+                        i1, i2, j1, j2 = d["indices"]
+                        diff_details_list.append(
+                            f"idx {i1}:{i2} -> {j1}:{j2} | full_prompt_chunk: {repr(d['full_prompt_chunk'])} | "
+                            f"current_prompt_chunk: {repr(d['current_prompt_chunk'])}"
+                        )
+                    diff_details = "\n".join(diff_details_list)
+                    logger.warning(f"Found differences:\n{diff_details}")
+
+        if finish_reason_type == FinishReasonTypeEnum.STOP:
+            pass
+        elif finish_reason_type == FinishReasonTypeEnum.LENGTH:
+            pass
+        else:
+            raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")
         self.truncate_output_ids(processing_class)
 
         assert (
@@ -391,29 +657,15 @@ class AsyncRolloutRequest(BaseModel):
     def truncate_output_ids(
         self, processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin
     ) -> None:
-        # Truncate the whole sequence first if it exceeds max model length
-        if self.input_ids.shape[-1] > self.max_model_len:
-            self.is_bad_trajectory = True
-            self.input_ids = self.input_ids[..., : self.max_model_len]
-            self.attention_mask = self.attention_mask[..., : self.max_model_len]
-            self.position_ids = self.position_ids[..., : self.max_model_len]
-            self.loss_mask = self.loss_mask[..., : self.max_model_len]
-
-        # Determine response part and truncate it if it exceeds max response length
-        prompt_len = self.prompt_ids.shape[-1]
-        self.response_ids = self.input_ids[..., prompt_len:]
-        if self.response_ids.shape[-1] > self.max_response_len:
-            self.is_bad_trajectory = True
-            self.response_ids = self.response_ids[..., : self.max_response_len]
-            
-            # Reconstruct the full sequence with truncated response
-            self.input_ids = torch.cat([self.prompt_ids, self.response_ids], dim=-1)
-            total_len = self.input_ids.shape[-1]
-            self.attention_mask = self.attention_mask[..., : total_len]
-            self.position_ids = self.position_ids[..., : total_len]
-            self.loss_mask = self.loss_mask[..., : total_len]
-
-        # Re-slice all response-related masks
-        self.response_attention_mask = self.attention_mask[..., prompt_len:]
-        self.response_position_ids = self.position_ids[..., prompt_len:]
-        self.response_loss_mask = self.loss_mask[..., prompt_len:]
+        self.input_ids = self.input_ids[..., : self.max_model_len]
+        self.attention_mask = self.attention_mask[..., : self.max_model_len]
+        self.position_ids = self.position_ids[..., : self.max_model_len]
+        self.loss_mask = self.loss_mask[..., : self.max_model_len]
+        self.response_ids = self.input_ids[..., self.prompt_ids.shape[-1] :][..., : self.max_response_len]
+        self.response_attention_mask = self.attention_mask[..., self.prompt_attention_mask.shape[-1] :][
+            ..., : self.max_response_len
+        ]
+        self.response_position_ids = self.position_ids[..., self.prompt_position_ids.shape[-1] :][
+            ..., : self.max_response_len
+        ]
+        self.response_loss_mask = self.loss_mask[..., self.prompt_loss_mask.shape[-1] :][..., : self.max_response_len]
