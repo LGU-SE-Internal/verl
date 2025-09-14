@@ -38,7 +38,8 @@ from verl.trainer.ppo.reward import load_reward_manager
 from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.model import compute_position_id_with_mask
-from verl.utils.rollout_trace import RolloutTraceConfig, rollout_trace_attr, rollout_trace_op
+from verl.utils.rollout_trace import (RolloutTraceConfig, rollout_trace_attr,
+                                      rollout_trace_op)
 from verl.workers.rollout.async_server import TokenOutput, async_server_class
 
 logger = logging.getLogger(__file__)
@@ -458,7 +459,8 @@ class AgentLoopWorker:
 
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:
-            batch.non_tensor_batch["agent_name"] = np.array(["single_turn_agent"] * len(batch), dtype=object)
+            # batch.non_tensor_batch["agent_name"] = np.array(["single_turn_agent"] * len(batch), dtype=object)
+            batch.non_tensor_batch["agent_name"] = np.array(["tool_agent"] * len(batch), dtype=object)
 
         if "index" in batch.non_tensor_batch:
             index = batch.non_tensor_batch["index"]
@@ -603,31 +605,31 @@ class AgentLoopWorker:
                 ).unsqueeze(0)  # (1, 3, seq_len)
             else:
                 position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
-            enable_async_reward = (
-                self.rm_executor is not None and self.config.reward_model.enable_resource_pool
-            ) or not self.config.reward_model.enable
-            if output.reward_score is None and enable_async_reward:
-                batch = TensorDict(
-                    {
-                        "prompts": prompt_output["input_ids"],  # [1, prompt_length]
-                        "responses": response_output["input_ids"],  # [1, response_length]
-                        "attention_mask": attention_mask,  # [1, prompt_length + response_length]
-                        "input_ids": input_ids,  # [1, prompt_length + response_length]
-                        "position_ids": position_ids,
-                    },
-                    batch_size=1,
-                )
-                non_tensor_batch = {
-                    **{k: np.array([v]) for k, v in kwargs.items()},
-                    "__num_turns__": np.array([output.num_turns]),
-                }
-                data = DataProto(
-                    batch=batch,
-                    non_tensor_batch=non_tensor_batch,
-                )
-                result = await self.reward_manager_worker.compute_score.remote(data)
-                output.reward_score = result["reward_score"]
-                output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
+            # enable_async_reward = (
+            #     self.rm_executor is not None and self.config.reward_model.enable_resource_pool
+            # ) or not self.config.reward_model.enable
+            # if output.reward_score is None and enable_async_reward:
+            #     batch = TensorDict(
+            #         {
+            #             "prompts": prompt_output["input_ids"],  # [1, prompt_length]
+            #             "responses": response_output["input_ids"],  # [1, response_length]
+            #             "attention_mask": attention_mask,  # [1, prompt_length + response_length]
+            #             "input_ids": input_ids,  # [1, prompt_length + response_length]
+            #             "position_ids": position_ids,
+            #         },
+            #         batch_size=1,
+            #     )
+            #     non_tensor_batch = {
+            #         **{k: np.array([v]) for k, v in kwargs.items()},
+            #         "__num_turns__": np.array([output.num_turns]),
+            #     }
+            #     data = DataProto(
+            #         batch=batch,
+            #         non_tensor_batch=non_tensor_batch,
+            #     )
+            #     result = await self.reward_manager_worker.compute_score.remote(data)
+            #     output.reward_score = result["reward_score"]
+            #     output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
 
             return _InternalAgentLoopOutput(
                 prompt_ids=prompt_output["input_ids"],
@@ -683,6 +685,10 @@ class AgentLoopWorker:
         non_tensor_batch = {
             "__num_turns__": np.array([input.num_turns for input in inputs], dtype=np.int32),
         }
+
+        # calculate total bad trajectories
+        is_bad_trajectories = [input.extra_fields.get("is_bad_trajectory", False) for input in inputs]
+        print(f"Filtered {sum(is_bad_trajectories)} bad trajectories.")
 
         # add reward_extra_info to non_tensor_batch
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
