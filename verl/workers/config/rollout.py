@@ -170,4 +170,4 @@ class RolloutConfig(BaseConfig):
 
     limit_images: Optional[int] = None
 
-    enable_compact_filtering: Optional[bool] = False
+    skip_tokenizer_init: bool = False
