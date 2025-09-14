@@ -153,45 +153,45 @@ class ToolAgentLoop(AgentLoopBase):
             interaction_kwargs=interaction_kwargs,
         )
 
-        try:
-            if self.tools:
-                await asyncio.gather(
-                    *[
-                        tool.create(
-                            request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("create_kwargs", {})
-                        )
-                        for tool in self.tools.values()
-                    ]
-                )
+        if self.tools:
+            await asyncio.gather(
+                *[
+                    tool.create(
+                        request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("create_kwargs", {})
+                    )
+                    for tool in self.tools.values()
+                ]
+            )
 
-            # State machine loop
-            state = AgentState.PENDING
-            while state != AgentState.TERMINATED:
-                if state == AgentState.PENDING:
-                    state = await self._handle_pending_state(agent_data, sampling_params)
-                elif state == AgentState.GENERATING:
-                    state = await self._handle_generating_state(agent_data, sampling_params)
-                    agent_data.assistant_turns += 1
-                elif state == AgentState.PROCESSING_TOOLS:
-                    state = await self._handle_processing_tools_state(agent_data)
-                elif state == AgentState.INTERACTING:
-                    state = await self._handle_interacting_state(agent_data)
-                    agent_data.user_turns += 1
-                else:
-                    logger.error(f"Invalid state: {state}")
-                    state = AgentState.TERMINATED
-        finally:
-            if self.tools:
-                await asyncio.gather(
-                    *[
-                        tool.release(
-                            request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("release_kwargs", {})
-                        )
-                        for tool in self.tools.values()
-                    ]
-                )
-            if agent_data.interaction:
-                await agent_data.interaction.end_interaction(request_id)
+        # State machine loop
+        state = AgentState.PENDING
+        while state != AgentState.TERMINATED:
+            if state == AgentState.PENDING:
+                state = await self._handle_pending_state(agent_data, sampling_params)
+            elif state == AgentState.GENERATING:
+                state = await self._handle_generating_state(agent_data, sampling_params)
+                agent_data.assistant_turns += 1
+            elif state == AgentState.PROCESSING_TOOLS:
+                state = await self._handle_processing_tools_state(agent_data)
+            elif state == AgentState.INTERACTING:
+                state = await self._handle_interacting_state(agent_data)
+                agent_data.user_turns += 1
+            else:
+                logger.error(f"Invalid state: {state}")
+                state = AgentState.TERMINATED
+
+        if self.tools:
+            await asyncio.gather(
+                *[
+                    tool.release(
+                        request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("release_kwargs", {})
+                    )
+                    for tool in self.tools.values()
+                ]
+            )
+            
+        if agent_data.interaction:
+            await agent_data.interaction.end_interaction(request_id)
 
         if agent_data.is_bad_trajectory:
             agent_data.response_mask = [0] * len(agent_data.response_mask)
