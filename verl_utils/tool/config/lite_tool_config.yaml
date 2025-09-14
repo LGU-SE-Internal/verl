@@ -2,7 +2,7 @@ tools:
   - class_name: "verl_utils.tool.lite_tool.EditTool"
     config: 
       root_dir: "/mnt/bn/trae-research-models/xujunjielong/datasets/benchmarks"
-      temp_dir: "/opt/tiger/patch_verifier/workspace"
+      temp_dir: "/opt/tiger/verifier-rm/workspace"
       type: native
     tool_schema:
       type: "function"
