@@ -169,3 +169,5 @@ class RolloutConfig(BaseConfig):
     sglang_engine_mode: str = "local"
 
     limit_images: Optional[int] = None
+
+    enable_compact_filtering: Optional[bool] = False
