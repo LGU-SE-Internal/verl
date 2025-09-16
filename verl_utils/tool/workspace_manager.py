@@ -41,7 +41,7 @@ class PatchSubmission(BaseTool):
         if not workspace:
             error_msg = f"Error: Could not find workspace for instance '{instance_id}'. This may indicate an internal error."
             print(error_msg)
-            return error_msg, 0.0, {}
+            return ToolResponse(text=error_msg), 0.0, {}
 
         diff_output = await asyncio.to_thread(workspace.get_diff)
         

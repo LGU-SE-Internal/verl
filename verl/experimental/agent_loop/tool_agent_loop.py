@@ -189,7 +189,7 @@ class ToolAgentLoop(AgentLoopBase):
                     for tool in self.tools.values()
                 ]
             )
-            
+
         if agent_data.interaction:
             await agent_data.interaction.end_interaction(request_id)
 
@@ -453,7 +453,11 @@ class ToolAgentLoop(AgentLoopBase):
                 text=f"Error when executing tool: {e}",
             )
         
-        tool_response_text = tool_execution_response.text
+        if isinstance(tool_execution_response, str):
+            print(f"Warning: tool_execution_response is string type. Content: {tool_execution_response}")
+            tool_response_text = tool_execution_response
+        else:
+            tool_response_text = tool_execution_response.text
         if tool_response_text and len(tool_response_text) > self.max_tool_response_length:
             if self.tool_response_truncate_side == "left":
                 tool_response_text = tool_response_text[: self.max_tool_response_length] + "...(truncated)"

@@ -43,7 +43,7 @@ class SearchTool(BaseTool):
         if not db_path:
             error_msg = f"No database path found for instance_id '{instance_id}'. `create` must be called first."
             print(error_msg)
-            return error_msg, 0.0, {}
+            return ToolResponse(text=error_msg), 0.0, {}
 
         required_params = ["construct", "entity"]
         
@@ -190,7 +190,7 @@ class EditTool(BaseTool):
         if workspace is None:
             error_msg = f"No workspace found for instance_id '{instance_id}'. `create` must be called first."
             print(error_msg)
-            return error_msg, 0.0, {}
+            return ToolResponse(text=error_msg), 0.0, {}
 
         required_params = ["path", "old_str", "new_str"]
         
@@ -200,7 +200,7 @@ class EditTool(BaseTool):
 
         if missing_params:
             error_msg = f"No edit was performed. The following required arguments were not provided: {', '.join(missing_params)}. Please provide all required arguments and try again."
-            return error_msg, 0.0, {}
+            return ToolResponse(text=error_msg), 0.0, {}
 
         path = parameters.get("path")
         old_str = parameters.get("old_str")
