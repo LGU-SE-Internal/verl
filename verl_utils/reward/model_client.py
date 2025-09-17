@@ -1,19 +1,19 @@
-from collections import defaultdict
-import requests
-import time
-from typing import List, Dict, Any
-from pydantic import BaseModel
+import json
 import os
 import random
-import json
-import time
-from datetime import datetime
 import sys
+import time
+from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List
 
+import requests
+from pydantic import BaseModel
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from verl_utils.reward.extract_answer import extract_patch, extract_tool_format, extract_think_format
-
+from verl_utils.reward.extract_answer import (extract_patch,
+                                              extract_think_format,
+                                              extract_tool_format)
 
 random.seed(42)
 HARNESS_URL = "http://[2605:340:cd52:103:852c:ee73:c3ca:af26]:5000/"
@@ -49,13 +49,18 @@ def compute_score_remote_clip(data_sources, solution_strs, ground_truths, extra_
     scores = [0.0 if score == -1.0 else score for score in scores]
     return scores
 
+def random_reward(data_sources, solution_strs, ground_truths, extra_infos):
+    if 'test' in data_sources[0]:
+        # return compute_score_bench(data_sources, solution_strs, ground_truths, extra_infos)
+        return compute_score_record(data_sources, solution_strs, ground_truths, extra_infos)
+    else:
+        compute_score_random(data_sources, solution_strs, ground_truths, extra_infos)
+
 def compute_score_remote(data_sources, solution_strs, ground_truths, extra_infos):
     if 'test' in data_sources[0]:
         # return compute_score_bench(data_sources, solution_strs, ground_truths, extra_infos)
         return compute_score_record(data_sources, solution_strs, ground_truths, extra_infos)
-    elif 'random' in data_sources[0]:
-        return compute_score_random(data_sources, solution_strs, ground_truths, extra_infos)
-    elif 'train' in data_sources[0]:
+    else:
         return compute_score_batch(data_sources, solution_strs, ground_truths, extra_infos)
 
 
