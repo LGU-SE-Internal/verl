@@ -54,7 +54,7 @@ def random_reward(data_sources, solution_strs, ground_truths, extra_infos):
         # return compute_score_bench(data_sources, solution_strs, ground_truths, extra_infos)
         return compute_score_record(data_sources, solution_strs, ground_truths, extra_infos)
     else:
-        compute_score_random(data_sources, solution_strs, ground_truths, extra_infos)
+        return compute_score_random(data_sources, solution_strs, ground_truths, extra_infos)
 
 def compute_score_remote(data_sources, solution_strs, ground_truths, extra_infos):
     if 'test' in data_sources[0]:
