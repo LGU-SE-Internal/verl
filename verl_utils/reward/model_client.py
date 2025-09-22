@@ -82,6 +82,11 @@ def compute_score_record(data_sources, solution_strs, ground_truths, extra_infos
     jsonl_content = "\n".join([json.dumps(p) for p in payload])
     with open(f'cached_submission_{ts}.jsonl', 'w') as f:
         f.write(jsonl_content)
+    if os.path.exists("/mnt/bn/trae-research-models/xujunjielong"):
+        with open(f"/mnt/bn/trae-research-models/xujunjielong/cached_submission_{ts}.jsonl", 'w') as f:
+            f.write(jsonl_content)
+    else:
+        print("ERROR: NO MNT FOR SAVING!")
 
     return [0.0] * len(patch_strs)
 
