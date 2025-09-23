@@ -942,7 +942,9 @@ class RayPPOTrainer:
             val_num = self.config.trainer.get("val_before_train_num", 32)
             print(f"Note: validate for {val_num} times before train.")
             for i in range(val_num):
+                print(f"Note: Start validation round {str(i)}")
                 val_metrics = self._validate()
+                print(f"Note: Finish validation round {str(i)}")
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.global_steps)
