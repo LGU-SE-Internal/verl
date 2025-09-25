@@ -286,6 +286,9 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Determine next state
         if agent_data.tool_calls:
+            for tool_call in agent_data.tool_calls:
+                if tool_call.name == 'patch_submission': # if submit a patch, terminate existing loop.
+                    return AgentState.TERMINATED
             return AgentState.PROCESSING_TOOLS
         elif self.interaction_config_file:
             return AgentState.INTERACTING
