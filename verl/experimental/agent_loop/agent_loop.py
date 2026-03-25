@@ -472,9 +472,25 @@ class AgentLoopWorker:
         )
 
         tasks = []
-        for i in range(len(batch)):
-            kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
-            tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
+        max_concurrent = config.multi_turn.get("max_concurrent_agents", None)
+        if max_concurrent:
+            num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
+            per_worker = max(1, max_concurrent // num_workers)
+            semaphore = asyncio.Semaphore(per_worker)
+
+            async def _sem_wrapper(coro):
+                async with semaphore:
+                    return await coro
+
+            for i in range(len(batch)):
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                tasks.append(asyncio.create_task(
+                    _sem_wrapper(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs))
+                ))
+        else:
+            for i in range(len(batch)):
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
         outputs = await asyncio.gather(*tasks)
 
         output = self._postprocess(outputs)

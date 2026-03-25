@@ -58,10 +58,60 @@ def random_reward(data_sources, solution_strs, ground_truths, extra_infos):
 
 def compute_score_remote(data_sources, solution_strs, ground_truths, extra_infos):
     if 'test' in data_sources[0]:
-        # return compute_score_bench(data_sources, solution_strs, ground_truths, extra_infos)
-        return compute_score_record(data_sources, solution_strs, ground_truths, extra_infos)
+        return compute_score_arl_test(data_sources, solution_strs, ground_truths, extra_infos)
     else:
         return compute_score_batch(data_sources, solution_strs, ground_truths, extra_infos)
+
+
+def compute_score_arl_test(data_sources, solution_strs, ground_truths, extra_infos):
+    """Test-time evaluation: run tests in ARL pods + save JSONL for records.
+
+    Replaces the old compute_score_record (save only) and compute_score_bench
+    (external harness) with direct ARL pod testing.
+    """
+    from verl_utils.reward.arl_reward import compute_score_arl
+
+    # Save JSONL record (same as compute_score_record, for bookkeeping)
+    ts = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
+    patch_strs = [extract_patch(sol) for sol in solution_strs]
+    payload = []
+    for idx, (patch, extra_info) in enumerate(zip(patch_strs, extra_infos)):
+        if patch.strip():
+            payload.append({
+                "model_name_or_path": 'trae-lite-ossi',
+                "instance_id": extra_info["instance_id"],
+                "model_patch": patch.strip()
+            })
+    if payload:
+        jsonl_content = "\n".join([json.dumps(p) for p in payload])
+        with open(f'cached_submission_{ts}.jsonl', 'w') as f:
+            f.write(jsonl_content)
+        if os.path.exists("/mnt/bn/trae-research-models/xujunjielong"):
+            with open(f"/mnt/bn/trae-research-models/xujunjielong/cached_submission_{ts}.jsonl", 'w') as f:
+                f.write(jsonl_content)
+
+    # Run actual tests in ARL pods
+    scores = compute_score_arl(data_sources, solution_strs, ground_truths, extra_infos)
+
+    # Log results
+    resolved = sum(1 for s in scores if s == 1.0)
+    total = len(scores)
+    empty = sum(1 for s in scores if s == -1.0)
+    print(f"[ARL Test] {resolved}/{total} resolved, {empty} empty patches")
+
+    # Save ARL results alongside JSONL
+    arl_results = {
+        "timestamp": ts,
+        "resolved": resolved,
+        "total": total,
+        "empty": empty,
+        "scores": scores,
+        "instance_ids": [info.get("instance_id", "") for info in extra_infos],
+    }
+    with open(f'cached_arl_results_{ts}.json', 'w') as f:
+        f.write(json.dumps(arl_results))
+
+    return scores
 
 
 def compute_score_random(data_sources, solution_strs, ground_truths, extra_infos):

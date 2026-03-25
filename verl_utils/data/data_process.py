@@ -30,6 +30,8 @@ def make_map_fn(data_source):
         process_fn = src.tts_prompt.process_fn
     elif 'gen' in data_source:
         process_fn = src.gen_prompt.process_fn
+    elif 'r2e' in data_source:
+        process_fn = src.r2e_prompt.process_fn
     elif 'ver' in data_source:
         process_fn = src.ver_prompt.process_fn
     elif 'pair' in data_source:

@@ -55,6 +55,7 @@ class MultiTurnConfig(BaseConfig):
     use_inference_chat_template: bool = False
     tokenization_sanity_check_mode: str = "strict"
     format: str = "hermes"
+    max_concurrent_agents: Optional[int] = None  # max concurrent agent loops per worker (semaphore)
 
 
 @dataclass

@@ -86,9 +86,7 @@ class AsyncSGLangServer(AsyncServerBase):
         return await self.master_worker.generate.remote(prompt_ids, sampling_params, request_id, image_data=image_data)
 
     async def wake_up(self):
-        if self.config.rollout.free_cache_engine:
-            await asyncio.gather(*[worker.wake_up.remote() for worker in self.workers])
+        await asyncio.gather(*[worker.wake_up.remote() for worker in self.workers])
 
     async def sleep(self):
-        if self.config.rollout.free_cache_engine:
-            await asyncio.gather(*[worker.sleep.remote() for worker in self.workers])
+        await asyncio.gather(*[worker.sleep.remote() for worker in self.workers])

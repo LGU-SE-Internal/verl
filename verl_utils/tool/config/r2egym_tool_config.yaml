@@ -1,0 +1,89 @@
+tools:
+  - class_name: "verl_utils.tool.arl_tool.ArlFileEditor"
+    config:
+      type: native
+      step_timeout: 90
+      reward_timeout: 300
+      namespace: "default"
+    tool_schema:
+      type: "function"
+      function:
+        name: "file_editor"
+        description: "Custom editing tool for viewing, creating and editing files.\n* State is persistent across command calls\n* If `path` is a file, `view` displays `cat -n` output. If `path` is a directory, `view` lists files up to 2 levels deep\n* The `create` command cannot be used if `path` already exists\n* The `undo_edit` command reverts the last edit to the file at `path`\n\nNotes for `str_replace`:\n* `old_str` must match EXACTLY one or more consecutive lines. Be mindful of whitespaces!\n* If `old_str` is not unique, the replacement will not be performed\n* `new_str` should contain the edited lines that replace `old_str`"
+        parameters:
+          type: "object"
+          properties:
+            command:
+              type: "string"
+              description: "The command to run."
+              enum: ["view", "create", "str_replace", "insert", "undo_edit"]
+            path:
+              type: "string"
+              description: "Absolute path to file or directory, e.g. `/testbed/file.py` or `/testbed`."
+            file_text:
+              type: "string"
+              description: "Required for `create`. Content of the file to be created."
+            old_str:
+              type: "string"
+              description: "Required for `str_replace`. The exact string in `path` to replace."
+            new_str:
+              type: "string"
+              description: "Optional for `str_replace` (replacement text). Required for `insert` (text to insert)."
+            insert_line:
+              type: "string"
+              description: "Required for `insert`. The `new_str` will be inserted AFTER this line number."
+            view_range:
+              type: "string"
+              description: "Optional for `view`. Line range like `[11, 12]`. `[start, -1]` shows from start to end."
+            concise:
+              type: "string"
+              description: "Optional for `view`. Set to `true` for condensed Python file view."
+          required: ["command", "path"]
+
+  - class_name: "verl_utils.tool.arl_tool.ArlSearch"
+    config:
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "search"
+        description: "Search for a term in a directory or file.\n* If `path` is a directory (default `.`), recursively search all non-hidden files\n* If `path` is a file, use `grep -n` to find matching lines\n* If more than 100 files match, the tool will stop and ask to narrow the search"
+        parameters:
+          type: "object"
+          properties:
+            search_term:
+              type: "string"
+              description: "The term to search for."
+            path:
+              type: "string"
+              description: "File or directory to search in. Defaults to `.`."
+          required: ["search_term"]
+
+  - class_name: "verl_utils.tool.arl_tool.ArlBashExec"
+    config:
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "execute_bash"
+        description: "Execute a bash command in the sandbox environment.\nCommands like `git`, `ipython`, `jupyter`, `nohup` are blocked.\nLong output will be truncated to save context."
+        parameters:
+          type: "object"
+          properties:
+            command:
+              type: "string"
+              description: "The bash command to execute."
+          required: ["command"]
+
+  - class_name: "verl_utils.tool.arl_tool.ArlFinish"
+    config:
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "finish"
+        description: "Submit your solution and finish. This will generate a diff patch of all changes made and conclude the session. Call this when you are confident the issue is resolved."
+        parameters:
+          type: "object"
+          properties: {}
+          required: []

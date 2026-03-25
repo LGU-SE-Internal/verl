@@ -447,7 +447,7 @@ class SGLangRollout(BaseRollout):
                 # NOTE(Chenyang): if you want to debug the SGLang engine output
                 # please set the following parameters
                 # Otherwise, it will make the engine run too slow
-                "log_level": "info",
+                "log_level": os.environ.get("SGLANG_LOG_LEVEL", "info"),
                 # "log_level": "error",
                 # log_requests=True,
                 # log_requests_level=2,

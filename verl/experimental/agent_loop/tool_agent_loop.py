@@ -107,6 +107,22 @@ class ToolAgentLoop(AgentLoopBase):
         for tool in cls.tools.values():
             tool.workspace_manager = cls.workspace_manager
 
+        # Initialize ArlSessionManager for ARL-backed tools
+        try:
+            from verl_utils.tool.arl_tool import ArlSessionManager, _ArlToolBase
+            arl_tools = [t for t in cls.tools.values() if isinstance(t, _ArlToolBase)]
+            if arl_tools:
+                arl_session_manager = ArlSessionManager()
+                for tool in arl_tools:
+                    tool.session_manager = arl_session_manager
+                print(f"Initialized ArlSessionManager for {len(arl_tools)} ARL tools")
+            else:
+                print("No ARL tools found in tool list")
+        except ImportError as e:
+            print(f"WARNING: Failed to import ARL tools: {e}")
+        except Exception as e:
+            print(f"ERROR: Failed to initialize ArlSessionManager: {e}")
+
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
@@ -154,14 +170,14 @@ class ToolAgentLoop(AgentLoopBase):
         )
 
         if self.tools:
-            await asyncio.gather(
-                *[
-                    tool.create(
-                        request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("create_kwargs", {})
-                    )
-                    for tool in self.tools.values()
-                ]
-            )
+            async def _create_tool(tool):
+                raw_kwargs = agent_data.tools_kwargs.get(tool.name, {}).get("create_kwargs", {})
+                # Support create_kwargs as JSON string (avoids Arrow nested-dict serialization issues)
+                if isinstance(raw_kwargs, str):
+                    raw_kwargs = json.loads(raw_kwargs) if raw_kwargs else {}
+                return await tool.create(request_id, **raw_kwargs)
+
+            await asyncio.gather(*[_create_tool(tool) for tool in self.tools.values()])
 
         # State machine loop
         state = AgentState.PENDING
@@ -181,14 +197,13 @@ class ToolAgentLoop(AgentLoopBase):
                 state = AgentState.TERMINATED
 
         if self.tools:
-            await asyncio.gather(
-                *[
-                    tool.release(
-                        request_id, **agent_data.tools_kwargs.get(tool.name, {}).get("release_kwargs", {})
-                    )
-                    for tool in self.tools.values()
-                ]
-            )
+            async def _release_tool(tool):
+                raw_kwargs = agent_data.tools_kwargs.get(tool.name, {}).get("release_kwargs", {})
+                if isinstance(raw_kwargs, str):
+                    raw_kwargs = json.loads(raw_kwargs) if raw_kwargs else {}
+                return await tool.release(request_id, **raw_kwargs)
+
+            await asyncio.gather(*[_release_tool(tool) for tool in self.tools.values()])
 
         if agent_data.interaction:
             await agent_data.interaction.end_interaction(request_id)
@@ -286,9 +301,17 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Determine next state
         if agent_data.tool_calls:
-            for tool_call in agent_data.tool_calls:
-                if tool_call.name == 'patch_submission': # if submit a patch, terminate existing loop.
-                    return AgentState.TERMINATED
+            has_terminal_tool = any(
+                tc.name in ('patch_submission', 'finish')
+                for tc in agent_data.tool_calls
+            )
+            if has_terminal_tool:
+                # Execute the terminal tool first (to capture patch diff),
+                # then terminate. We go to PROCESSING_TOOLS which will
+                # execute the tool and append its response to the solution.
+                # The _handle_processing_tools_state will check for terminal
+                # tools and return TERMINATED after execution.
+                agent_data.metrics["_terminate_after_tools"] = True
             return AgentState.PROCESSING_TOOLS
         elif self.interaction_config_file:
             return AgentState.INTERACTING
@@ -391,6 +414,13 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+
+        # If a terminal tool (finish/patch_submission) was executed this turn,
+        # terminate now — the tool response (containing the patch) is already
+        # appended to the solution.
+        if agent_data.metrics.get("_terminate_after_tools"):
+            return AgentState.TERMINATED
+
         return AgentState.GENERATING
 
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:
