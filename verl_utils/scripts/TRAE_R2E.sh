@@ -120,5 +120,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=$ROOT_DIR/rollouts/$EXPERIMENT_NAME \
     custom_reward_function.path=$REWARD_PATH \
     custom_reward_function.name=$REWARD_NAME \
-    reward_model.reward_manager=batch \
+    reward_model.reward_manager=naive \
     2>&1 | tee $EXPERIMENT_NAME.log
