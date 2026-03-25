@@ -1,8 +1,12 @@
 
-### Modify "MODEL_PATH" in model_server.py and "SERVER_URL" in model_client.py
+# Usage: RM_MODEL_PATH=/path/to/model bash verl_utils/reward/setup.sh
+# Environment variables:
+#   RM_MODEL_PATH  — path to reward model (default: SB_DAPO_RL_32B checkpoint)
 
 # sudo apt-get install net-tools
 # export BYTED_RAY_SERVE_RUN_HOST="::"
+
+export RM_MODEL_PATH="${RM_MODEL_PATH:'/mnt/bn/trae-research-models-lq/xujunjielong/models/R4P-32B'}"
 
 pip install -e .
 

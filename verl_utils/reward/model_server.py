@@ -1,25 +1,26 @@
-import os
 import asyncio
-import numpy as np
+import os
+import re
+import sys
 import uuid
+from typing import Any, Dict, List
+
+import numpy as np
+import ray
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from ray import serve
+from ray.exceptions import RayActorError
+from ray.serve.handle import DeploymentHandle
+from transformers import AutoTokenizer
 from vllm import SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
-from transformers import AutoTokenizer
-import ray
-from ray import serve
-from ray.serve.handle import DeploymentHandle
-import sys
-import re
-from ray.exceptions import RayActorError
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from verl_utils.reward.extract_answer import extract_batch_combine
 
-MODEL_PATH = "/mnt/bn/trae-research-models/xujunjielong/experiments/verl/SB_DAPO_RL_32B/global_step_225/actor/huggingface" # modify it
+MODEL_PATH = os.environ.get("RM_MODEL_PATH", None)
 TOKENIZER_PATH = MODEL_PATH
 TP_SIZE = 8  # Tensor Parallelism size per engine
 DP_SIZE = 1  # Data Parallelism size (number of engine replicas)

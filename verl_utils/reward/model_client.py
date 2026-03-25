@@ -16,8 +16,7 @@ from verl_utils.reward.extract_answer import (extract_patch,
                                               extract_tool_format)
 
 random.seed(42)
-HARNESS_URL = "http://[2605:340:cd52:103:852c:ee73:c3ca:af26]:5000/"
-SERVER_URL = "http://[2605:340:cd51:4900:14b1:50d9:ed35:b3f4]:8365/score"
+SERVER_URL = os.environ.get("RM_SERVER_URL", None)
 RM_BATCH_SIZE = 4
 
 # --- Pydantic Models ---

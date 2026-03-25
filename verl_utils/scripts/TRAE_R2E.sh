@@ -9,6 +9,8 @@ export ARL_MIRROR_NAMESPACE="${ARL_MIRROR_NAMESPACE:-code}"
 export ARL_REWARD_CONCURRENCY="${ARL_REWARD_CONCURRENCY:-16}"
 export ARL_REWARD_TIMEOUT="${ARL_REWARD_TIMEOUT:-600}"
 export ARL_EXPERIMENT_ID="${ARL_EXPERIMENT_ID:-default}"
+# Reward model server URL (for RM-based reward)
+export RM_SERVER_URL="${RM_SERVER_URL:-'http://[2605:340:cd51:4900:14b1:50d9:ed35:b3f4]:8365/score'}"
 export SGLANG_LOG_LEVEL="${SGLANG_LOG_LEVEL:-error}"
 export HF_ENDPOINT=https://hf-mirror.com
 
