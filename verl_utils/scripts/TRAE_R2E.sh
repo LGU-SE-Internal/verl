@@ -43,13 +43,15 @@ test_files="['$DATA_DIR/data_r2e_test.parquet']"
 mkdir -p /opt/tiger/verifier-rm/workspace
 tool_config_path=/opt/tiger/verifier-rm/verl_utils/tool/config/r2egym_tool_config.yaml
 
-# Reward function: choose one
-# Option 1: ARL testing-based reward (creates pods, runs tests)
-REWARD_PATH=verl_utils/reward/arl_reward.py
-REWARD_NAME=compute_score_arl_clip
-# Option 2: RM-based reward (sends patch to reward model API)
-REWARD_PATH=verl_utils/reward/model_client.py
-REWARD_NAME=compute_score_remote_clip
+# Reward function (override via REWARD_TYPE=arl or REWARD_TYPE=rm)
+REWARD_TYPE="${REWARD_TYPE:-rm}"
+if [ "$REWARD_TYPE" = "arl" ]; then
+    REWARD_PATH=verl_utils/reward/arl_reward.py
+    REWARD_NAME=compute_score_arl_clip
+else
+    REWARD_PATH=verl_utils/reward/model_client.py
+    REWARD_NAME=compute_score_remote_clip
+fi
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
