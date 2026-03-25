@@ -6,7 +6,7 @@
 # sudo apt-get install net-tools
 # export BYTED_RAY_SERVE_RUN_HOST="::"
 
-export RM_MODEL_PATH="${RM_MODEL_PATH:-'/mnt/bn/trae-research-models-lq/xujunjielong/models/R4P-32B'}"
+export RM_MODEL_PATH="${RM_MODEL_PATH:-/mnt/bn/trae-research-models-lq/xujunjielong/models/R4P-32B}"
 
 pip install -e .
 
