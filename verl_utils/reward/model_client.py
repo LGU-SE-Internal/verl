@@ -17,6 +17,7 @@ from verl_utils.reward.extract_answer import (extract_patch,
 
 random.seed(42)
 SERVER_URL = os.environ.get("RM_SERVER_URL", None)
+ROOT_DIR = os.environ.get("ROOT_DIR", "")
 RM_BATCH_SIZE = 4
 
 # --- Pydantic Models ---

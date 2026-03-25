@@ -61,7 +61,10 @@ def process_fn(example, idx):
     instance_id = extra.get("instance_id") or (
         f"{repo_name}_{commit_hash[:12]}" if repo_name else f"r2e_{idx}"
     )
-    split = "train"
+    # Infer split from the data_source set during swe_dataset.py
+    # r2e_train → "train", r2e_test / r2e_test_hard → "test"
+    raw_data_source = example.get("data_source", "")
+    split = "test" if "test" in raw_data_source else "train"
 
     # Preserve SWE-Bench harness fields if present (needed by swebench reward)
     swebench_fields = {}

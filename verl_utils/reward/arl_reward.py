@@ -261,7 +261,7 @@ def _score_single_instance(
             )
             out, err = _run_in_session(
                 session,
-                "git apply --allow-empty /tmp/agent.patch",
+                "git apply /tmp/agent.patch",
                 repo_path,
                 30,
                 swebench_verified=swebench_verified,

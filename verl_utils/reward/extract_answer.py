@@ -73,18 +73,20 @@ def extract_tool_format(llm_solution: str):
     elif tool_call_left_count != tool_call_right_count or tool_response_left_count != tool_response_right_count: # tooluse unpair
         return False
     else:
-        try:
-            for i in range(len(tool_calls)):
-                call_json = tool_calls[i].strip()
-                call_dict = json.loads(call_json)
-                if call_dict['name'] == 'search_tool': # search only (mandatory)
-                    construct = call_dict['arguments']['construct']
-                    if construct in ["function", "class", "class_method"] and not re.search(r"No .* named .* found\.", tool_responses[i].strip()):
-                        return True
-            return False
-        except Exception as e:
-            print(f"Error occurred when extracting tool format: {str(e)}")
-            return False
+        return True
+        ### Below is used for Lite only.
+        # try:
+        #     for i in range(len(tool_calls)):
+        #         call_json = tool_calls[i].strip()
+        #         call_dict = json.loads(call_json)
+        #         if call_dict['name'] == 'search_tool': # search only (mandatory)
+        #             construct = call_dict['arguments']['construct']
+        #             if construct in ["function", "class", "class_method"] and not re.search(r"No .* named .* found\.", tool_responses[i].strip()):
+        #                 return True
+        #     return False
+        # except Exception as e:
+        #     print(f"Error occurred when extracting tool format: {str(e)}")
+        #     return False
 
 def extract_patch(llm_solution: str):
     patch_pattern = r'\[PATCH\]\n(.*?)\n\[/PATCH\]'

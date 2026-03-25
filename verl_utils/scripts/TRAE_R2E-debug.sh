@@ -10,7 +10,7 @@ export ARL_REWARD_CONCURRENCY="${ARL_REWARD_CONCURRENCY:-1024}"
 export ARL_REWARD_TIMEOUT="${ARL_REWARD_TIMEOUT:-600}"
 export ARL_EXPERIMENT_ID="${ARL_EXPERIMENT_ID:-default}"
 # Reward model server URL (for RM-based reward)
-export RM_SERVER_URL="${RM_SERVER_URL:-http://[2605:340:cd51:601:bd06:4b59:8af4:f109]:8365/score}"
+export RM_SERVER_URL="${RM_SERVER_URL:-http://[2605:340:cd51:601:ac2e:6a32:7f73:b1a7]:8365/score}"
 export SGLANG_LOG_LEVEL="${SGLANG_LOG_LEVEL:-error}"
 export HF_ENDPOINT=https://hf-mirror.com
 
@@ -44,15 +44,13 @@ test_files="['$DATA_DIR/data_r2e_test_hard.parquet']"
 mkdir -p /opt/tiger/verifier-rm/workspace
 tool_config_path=/opt/tiger/verifier-rm/verl_utils/tool/config/r2egym_tool_config.yaml
 
-# Reward function (override via REWARD_TYPE=arl or REWARD_TYPE=rm)
-REWARD_TYPE="${REWARD_TYPE:-rm}"
-if [ "$REWARD_TYPE" = "arl" ]; then
-    REWARD_PATH=verl_utils/reward/arl_reward.py
-    REWARD_NAME=compute_score_arl_clip
-else
-    REWARD_PATH=verl_utils/reward/model_client.py
-    REWARD_NAME=compute_score_remote_clip
-fi
+# Reward function: choose one
+# Option 1: ARL testing-based reward (creates pods, runs tests)
+REWARD_PATH=verl_utils/reward/arl_reward.py
+REWARD_NAME=compute_score_arl_clip
+# Option 2: RM-based reward (sends patch to reward model API)
+# REWARD_PATH=verl_utils/reward/model_client.py
+# REWARD_NAME=compute_score_remote_clip
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -61,8 +59,6 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=50 \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=50 \
     +actor_rollout_ref.rollout.multi_turn.max_concurrent_agents=32 \
-    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=10000 \
-    actor_rollout_ref.rollout.agent.num_workers=1 \
     actor_rollout_ref.rollout.multi_turn.format=hermes \
     actor_rollout_ref.rollout.multi_stage_wake_up=True \
     data.return_raw_chat=True \
@@ -70,7 +66,8 @@ python3 -m verl.trainer.main_ppo \
     data.val_files=$test_files \
     data.shuffle=True \
     +data.seed=42 \
-    data.train_batch_size=64 \
+    actor_rollout_ref.rollout.agent.num_workers=1 \
+    data.train_batch_size=1 \
     data.max_prompt_length=4096 \
     data.max_response_length=28672 \
     data.filter_overlong_prompts=True \
@@ -79,8 +76,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.enable_gradient_checkpointing=true \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32000 \
     actor_rollout_ref.actor.use_dynamic_bsz=false \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true \
@@ -96,7 +93,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.grad_clip=1.0 \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bf16 \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.mode=async \
@@ -106,7 +103,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.n=8 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=false \
     algorithm.use_kl_in_reward=False \
     algorithm.kl_ctrl.kl_coef=0.0 \
@@ -114,8 +111,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.val_before_train=true \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=$ARNOLD_WORKER_NUM \
-    trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.save_freq=20 \
+    trainer.test_freq=20 \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.total_epochs=5 \
@@ -123,4 +120,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=$ROOT_DIR/rollouts/$EXPERIMENT_NAME \
     custom_reward_function.path=$REWARD_PATH \
     custom_reward_function.name=$REWARD_NAME \
-    reward_model.reward_manager=batch
+    reward_model.reward_manager=batch \
+    2>&1 | tee $EXPERIMENT_NAME.log

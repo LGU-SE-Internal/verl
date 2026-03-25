@@ -16,6 +16,7 @@ from verl.tools.base_tool import BaseTool
 from verl.tools.schemas import OpenAIFunctionToolSchema, ToolResponse
 
 logger = logging.getLogger(__name__)
+logger.setLevel(os.getenv("ARL_TOOL_LOG_LEVEL", "ERROR"))
 
 TOOLS_DIR = os.path.join(os.path.dirname(__file__), "r2egym_tools")
 

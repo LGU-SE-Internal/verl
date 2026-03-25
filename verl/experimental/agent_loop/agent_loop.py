@@ -472,6 +472,17 @@ class AgentLoopWorker:
         )
 
         tasks = []
+        total = len(batch)
+        completed_count = [0]  # mutable counter for closure
+
+        async def _tracked(coro):
+            result = await coro
+            completed_count[0] += 1
+            done = completed_count[0]
+            if done == total or done % max(1, total // 10) == 0:
+                print(f"[Rollout] {done}/{total} trajectories completed")
+            return result
+
         max_concurrent = config.multi_turn.get("max_concurrent_agents", None)
         if max_concurrent:
             num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
@@ -485,12 +496,12 @@ class AgentLoopWorker:
             for i in range(len(batch)):
                 kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
                 tasks.append(asyncio.create_task(
-                    _sem_wrapper(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs))
+                    _sem_wrapper(_tracked(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
                 ))
         else:
             for i in range(len(batch)):
                 kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
-                tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
+                tasks.append(asyncio.create_task(_tracked(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs))))
         outputs = await asyncio.gather(*tasks)
 
         output = self._postprocess(outputs)

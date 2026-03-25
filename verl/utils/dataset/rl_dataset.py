@@ -150,7 +150,8 @@ class RLHFDataset(Dataset):
             video_key = self.video_key
 
             if processor is not None:
-                from verl.utils.dataset.vision_utils import process_image, process_video
+                from verl.utils.dataset.vision_utils import (process_image,
+                                                             process_video)
 
                 def doc2len(doc) -> int:
                     messages = self._build_messages(doc)
@@ -179,8 +180,10 @@ class RLHFDataset(Dataset):
                         )
                     )
 
+            # Reserve 1024 tokens for tool schema overhead injected by agent loop
+            effective_max = self.max_prompt_length - 1024
             dataframe = dataframe.filter(
-                lambda doc: doc2len(doc) <= self.max_prompt_length,
+                lambda doc: doc2len(doc) <= effective_max,
                 num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
             )
@@ -230,7 +233,8 @@ class RLHFDataset(Dataset):
         model_inputs = {}
 
         if self.processor is not None:
-            from verl.utils.dataset.vision_utils import process_image, process_video
+            from verl.utils.dataset.vision_utils import (process_image,
+                                                         process_video)
 
             raw_prompt = self.processor.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs

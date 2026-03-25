@@ -12,3 +12,4 @@ from .gen_prompt import *
 from .ver_prompt import *
 from .pair_prompt import *
 from .r2e_prompt import *
+from .lite_prompt import *

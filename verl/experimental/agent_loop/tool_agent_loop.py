@@ -491,7 +491,7 @@ class ToolAgentLoop(AgentLoopBase):
             tool_response_text = tool_execution_response
         else:
             tool_response_text = tool_execution_response.text
-        if tool_response_text and len(tool_response_text) > self.max_tool_response_length:
+        if tool_response_text and len(tool_response_text) > self.max_tool_response_length and tool_name not in ("finish", "patch_submission"):
             if self.tool_response_truncate_side == "left":
                 tool_response_text = tool_response_text[: self.max_tool_response_length] + "...(truncated)"
             elif self.tool_response_truncate_side == "right":
