@@ -10,7 +10,7 @@ export ARL_REWARD_CONCURRENCY="${ARL_REWARD_CONCURRENCY:-1024}"
 export ARL_REWARD_TIMEOUT="${ARL_REWARD_TIMEOUT:-600}"
 export ARL_EXPERIMENT_ID="${ARL_EXPERIMENT_ID:-default}"
 # Reward model server URL (for RM-based reward)
-export RM_SERVER_URL="${RM_SERVER_URL:-http://[2605:340:cd51:601:bd06:4b59:8af4:f109]:8365/score}"
+export RM_SERVER_URL="${RM_SERVER_URL:-http://[2605:340:cd51:601:ac2e:6a32:7f73:b1a7]:8365/score}"
 export SGLANG_LOG_LEVEL="${SGLANG_LOG_LEVEL:-error}"
 export HF_ENDPOINT=https://hf-mirror.com
 
@@ -60,7 +60,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.multi_turn.enable=true \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=50 \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=50 \
-    +actor_rollout_ref.rollout.multi_turn.max_concurrent_agents=32 \
+    +actor_rollout_ref.rollout.multi_turn.max_concurrent_agents=$((32 * ARNOLD_WORKER_NUM)) \
     actor_rollout_ref.rollout.multi_turn.max_tool_response_length=10000 \
     actor_rollout_ref.rollout.agent.num_workers=1 \
     actor_rollout_ref.rollout.multi_turn.format=hermes \
