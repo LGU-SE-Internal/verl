@@ -92,7 +92,7 @@ def extract_patch(llm_solution: str):
     patch_pattern = r'\[PATCH\]\n(.*?)\n\[/PATCH\]'
     patch_match = re.findall(patch_pattern, llm_solution, re.DOTALL)
     if patch_match:
-        return patch_match[-1].strip() # use final patch
+        return patch_match[-1] # use final patch
     else:
         return "" # no patch
         

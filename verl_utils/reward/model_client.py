@@ -80,14 +80,14 @@ def compute_score_arl_test(data_sources, solution_strs, ground_truths, extra_inf
             payload.append({
                 "model_name_or_path": 'trae-lite-ossi',
                 "instance_id": extra_info["instance_id"],
-                "model_patch": patch.strip()
+                "model_patch": patch
             })
     if payload:
         jsonl_content = "\n".join([json.dumps(p) for p in payload])
         with open(f'cached_submission_{ts}.jsonl', 'w') as f:
             f.write(jsonl_content)
-        if os.path.exists("/mnt/bn/trae-research-models/xujunjielong"):
-            with open(f"/mnt/bn/trae-research-models/xujunjielong/cached_submission_{ts}.jsonl", 'w') as f:
+        if ROOT_DIR:
+            with open(os.path.join(ROOT_DIR, f'cached_submission_{ts}.jsonl'), 'w') as f:
                 f.write(jsonl_content)
 
     # Run actual tests in ARL pods
@@ -126,17 +126,17 @@ def compute_score_record(data_sources, solution_strs, ground_truths, extra_infos
             payload.append({
                 "model_name_or_path": 'trae-lite-ossi',
                 "instance_id": extra_info["instance_id"],
-                "model_patch": patch.strip()
+                "model_patch": patch
             })
 
     jsonl_content = "\n".join([json.dumps(p) for p in payload])
     with open(f'cached_submission_{ts}.jsonl', 'w') as f:
         f.write(jsonl_content)
-    if os.path.exists("/mnt/bn/trae-research-models/xujunjielong"):
-        with open(f"/mnt/bn/trae-research-models/xujunjielong/cached_submission_{ts}.jsonl", 'w') as f:
+    if ROOT_DIR:
+        with open(os.path.join(ROOT_DIR, f'cached_submission_{ts}.jsonl'), 'w') as f:
             f.write(jsonl_content)
     else:
-        print("ERROR: NO MNT FOR SAVING!")
+        print("WARNING: ROOT_DIR not set, backup not saved.")
 
     return [0.0] * len(patch_strs)
 
@@ -350,15 +350,93 @@ def compute_score_batch(data_sources, solution_strs, ground_truths, extra_infos)
     
     return final_scores
 
+def evaluate_jsonl(jsonl_path):
+    """Evaluate patches from a cached_submission JSONL using ARL pods.
+
+    Usage:
+        python verl_utils/reward/model_client.py cached_submission_2026-03-26_17-24-34.jsonl
+
+    The JSONL format (one JSON per line):
+        {"model_name_or_path": "...", "instance_id": "astropy__astropy-13398", "model_patch": "diff --git ..."}
+
+    Extra info (docker_image etc.) is loaded from R2E-Gym/SWE-Bench-Verified.
+    Patches produced before the strip() bugfix are handled: trailing newline is ensured.
+    """
+    from datasets import load_dataset
+    from verl_utils.reward.arl_reward import compute_score_arl
+
+    # Read JSONL
+    with open(jsonl_path, 'r') as f:
+        objs = [json.loads(line) for line in f if line.strip()]
+    print(f"Loaded {len(objs)} patches from {jsonl_path}")
+
+    # Load R2E dataset for extra_info (need docker_image for ARL pods)
+    print("Loading R2E-Gym/SWE-Bench-Verified for extra_info ...")
+    ds = load_dataset("R2E-Gym/SWE-Bench-Verified")
+    split = ds["test"] if "test" in ds else ds["train"]
+    instance_map = {row["instance_id"]: dict(row) for row in split}
+
+    data_sources = []
+    solution_strs = []
+    ground_truths = []
+    extra_infos = []
+    skipped = []
+
+    for obj in objs:
+        instance_id = obj["instance_id"]
+        patch = obj.get("model_patch", "")
+
+        if instance_id not in instance_map:
+            print(f"  SKIP: {instance_id} not found in R2E dataset")
+            skipped.append(instance_id)
+            continue
+
+        # Fix strip() damage from old code: ensure trailing newline
+        if patch and not patch.endswith("\n"):
+            patch += "\n"
+
+        data_sources.append("r2e_test")
+        # Wrap in format that extract_patch() expects
+        solution_strs.append(f"[PATCH]\n{patch}\n[/PATCH]")
+        ground_truths.append("")
+        extra_infos.append(instance_map[instance_id])
+
+    print(f"Evaluating {len(solution_strs)} patches ({len(skipped)} skipped) ...")
+    scores = compute_score_arl(data_sources, solution_strs, ground_truths, extra_infos)
+
+    # Report
+    resolved = sum(1 for s in scores if s == 1.0)
+    failed = sum(1 for s in scores if s == 0.0)
+    empty = sum(1 for s in scores if s == -1.0)
+    print(f"\nResults: {resolved}/{len(scores)} resolved, {failed} failed, {empty} empty")
+
+    evaluated_objs = [o for o in objs if o["instance_id"] not in skipped]
+    for obj, score in zip(evaluated_objs, scores):
+        status = "RESOLVED" if score == 1.0 else ("EMPTY" if score == -1.0 else "FAILED")
+        print(f"  {obj['instance_id']}: {status}")
+
+    # Save results
+    ts = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
+    results = {
+        "source": jsonl_path,
+        "timestamp": ts,
+        "total": len(scores),
+        "resolved": resolved,
+        "failed": failed,
+        "empty": empty,
+        "scores": {obj["instance_id"]: s for obj, s in zip(evaluated_objs, scores)},
+    }
+    result_path = f"eval_results_{ts}.json"
+    with open(result_path, 'w') as f:
+        f.write(json.dumps(results, indent=2))
+    print(f"Results saved to {result_path}")
+
+    return scores
+
+
 if __name__ == '__main__':
-    with open('data/rollouts/TRAE-LITE/cached_submission_2025-09-11_15-40-45.jsonl', 'r') as f:
-        lines = f.readlines()
-    objs = [json.loads(line) for line in lines]
-    e = [{"instance_id": obj['instance_id']} for obj in objs]
-    t = """{"name": "search_tool", "arguments": {"construct": "class", "entity": "CompoundModel"}}"""
-    p = [f"<tool_call>\n{t}\n</tool_call>\n<tool_response>\n[PATCH]\n{obj['model_patch']}\n[/PATCH]\n</tool_response>\n" for obj in objs]
-    scores = compute_score_bench("", p, "", e)
-    scores_true = [score for score in scores if score == 1.0]
-    print(f"Correct patch num: {len(scores_true)}")
-    print(f"Total pass@1: {len(scores_true)/500}")
-    print(len(scores_true)/len(scores))
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluate cached_submission JSONL via ARL pods")
+    parser.add_argument("jsonl_path", help="Path to cached_submission_*.jsonl file")
+    args = parser.parse_args()
+    evaluate_jsonl(args.jsonl_path)
