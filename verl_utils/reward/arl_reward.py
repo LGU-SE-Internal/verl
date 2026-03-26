@@ -272,6 +272,17 @@ def _score_single_instance(
                 swebench_verified=swebench_verified,
             )
             if "Error" in err:
+                # Fallback: relaxed apply for patches damaged by .strip()
+                # --whitespace=fix: auto-fix trailing whitespace errors
+                # -C0 --unidiff-zero: ignore context line count mismatch
+                out, err = _run_in_session(
+                    session,
+                    "git apply --whitespace=fix -C0 --unidiff-zero /tmp/agent.patch",
+                    repo_path,
+                    30,
+                    swebench_verified=swebench_verified,
+                )
+            if "Error" in err:
                 logger.warning(f"git apply failed: {out}")
                 return 0.0
 

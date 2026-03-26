@@ -438,5 +438,19 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Evaluate cached_submission JSONL via ARL pods")
     parser.add_argument("jsonl_path", help="Path to cached_submission_*.jsonl file")
+    parser.add_argument("--arl-gateway-url", default="http://118.145.210.10:8080")
+    parser.add_argument("--arl-mirror-namespace", default="code")
+    parser.add_argument("--arl-concurrency", type=int, default=1024)
+    parser.add_argument("--arl-timeout", type=int, default=600)
+    parser.add_argument("--arl-experiment-id", default="eval")
     args = parser.parse_args()
+
+    # Set ARL env vars (defaults match TRAE_R2E.sh)
+    os.environ.setdefault("ARL_GATEWAY_URL", args.arl_gateway_url)
+    os.environ.setdefault("ARL_MIRROR_NAMESPACE", args.arl_mirror_namespace)
+    os.environ.setdefault("ARL_REWARD_CONCURRENCY", str(args.arl_concurrency))
+    os.environ.setdefault("ARL_REWARD_TIMEOUT", str(args.arl_timeout))
+    os.environ.setdefault("ARL_EXPERIMENT_ID", args.arl_experiment_id)
+    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
     evaluate_jsonl(args.jsonl_path)

@@ -1,7 +1,7 @@
 export ROOT_DIR='/mnt/bn/trae-research-models-lq/xujunjielong'
 export BASE_MODEL=$ROOT_DIR'/models/Qwen3-32B'
 export WAND_PROJECT='verifier-rm'
-export EXPERIMENT_NAME='TRAE_R2E'
+export EXPERIMENT_NAME='TRAE_R2E_3x8'
 
 # ARL environment config
 export ARL_GATEWAY_URL="${ARL_GATEWAY_URL:-http://118.145.210.10:8080}"
@@ -54,6 +54,9 @@ else
     REWARD_NAME=compute_score_remote_clip
 fi
 
+# ── 3x8 A100 config ──
+# 24 GPUs total, SP=8 → DP=3
+# train_batch_size=66 (÷3=22), ppo_mini_batch_size=33 (×8÷3=88, 176/88=2 mini-batches)
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     actor_rollout_ref.rollout.multi_turn.tool_config_path=$tool_config_path \
@@ -70,7 +73,7 @@ python3 -m verl.trainer.main_ppo \
     data.val_files=$test_files \
     data.shuffle=True \
     +data.seed=42 \
-    data.train_batch_size=64 \
+    data.train_batch_size=66 \
     data.max_prompt_length=4096 \
     data.max_response_length=28672 \
     data.filter_overlong_prompts=True \
@@ -79,7 +82,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.enable_gradient_checkpointing=true \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=33 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32000 \
     actor_rollout_ref.actor.use_dynamic_bsz=false \
