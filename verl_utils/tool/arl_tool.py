@@ -458,7 +458,7 @@ class ArlFinish(_ArlToolBase):
             30,
         )
 
-        patch = diff_output.strip() if diff_output else ""
+        patch = diff_output if diff_output else ""
         response_text = f"[PATCH]\n{patch}\n[/PATCH]"
         return ToolResponse(text=response_text), 0.0, {}
 

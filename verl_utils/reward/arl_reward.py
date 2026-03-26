@@ -249,16 +249,21 @@ def _score_single_instance(
 
         # Apply patch
         if patch.strip():
-            # Write patch to file, then apply
+            # Ensure patch ends with exactly one newline (git requires it).
             import base64
+            if not patch.endswith("\n"):
+                patch += "\n"
             b64 = base64.b64encode(patch.encode()).decode()
-            _run_in_session(
+            write_out, write_err = _run_in_session(
                 session,
                 f"printf '%s' '{b64}' | base64 -d > /tmp/agent.patch",
                 repo_path,
                 30,
                 swebench_verified=swebench_verified,
             )
+            if "Error" in str(write_err):
+                logger.warning(f"Failed to write patch file: {write_out}")
+                return 0.0
             out, err = _run_in_session(
                 session,
                 "git apply /tmp/agent.patch",
